@@ -1,0 +1,8 @@
+{
+  "title": "tsconfig paths alias 循环依赖",
+  "status": "expected-pass",
+  "why": "保护 alias 模块解析能力。仓库通过 @/* alias 互相引用并构成环——中大型前端仓库普遍如此。正则实现时期此用例失败：resolveImport 只处理以 . 开头的相对路径，alias 导入被整条丢弃，依赖图为空。改用 TypeScript 模块解析后，baseUrl 与 paths 由编译器负责。",
+  "expect": {
+    "cycles": [["src/shared/format.ts", "src/user/service.ts"]]
+  }
+}

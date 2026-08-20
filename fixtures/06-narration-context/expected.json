@@ -1,0 +1,14 @@
+{
+  "title": "叙述上下文构建与环切点计算",
+  "status": "expected-pass",
+  "why": "保护送给 LLM 之前的上下文压缩逻辑。符号图直接序列化会轻松几十万 token，必须压成分层摘要；同时验证「环上最适合切断的边」是算出来的而非让模型猜——stores/cart.ts 通过 import 与 re-export 两条边引用 services/order.ts，反向只有一条，因此建议切点应当是引用更少的那条。",
+  "expect": {
+    "cycles": [["services/order.ts", "stores/cart.ts"]],
+    "components": ["Home", "Card"],
+    "narration": {
+      "maxEstimatedTokens": 1000,
+      "modules": ["pages", "components", "services", "stores", "utils"],
+      "cycleCuts": [{ "from": "services/order.ts", "to": "stores/cart.ts", "references": 1 }]
+    }
+  }
+}

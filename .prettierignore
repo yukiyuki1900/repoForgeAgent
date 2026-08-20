@@ -1,0 +1,7 @@
+node_modules
+dist
+# fixture 代码刻意写成特定形态，用于触发解析边界，不要格式化
+fixtures
+web/dist
+web/node_modules
+pnpm-lock.yaml

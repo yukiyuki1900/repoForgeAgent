@@ -1,0 +1,8 @@
+{
+  "title": "相对路径循环依赖",
+  "status": "expected-pass",
+  "why": "基础能力对照组。纯相对路径 import 构成的环必须能被检出，否则说明依赖图或 Tarjan 出现了回归。",
+  "expect": {
+    "cycles": [["src/a.ts", "src/b.ts"]]
+  }
+}

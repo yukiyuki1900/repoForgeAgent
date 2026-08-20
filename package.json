@@ -1,0 +1,43 @@
+{
+  "name": "repoforgeagent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic semantic analysis for front-end repositories.",
+  "type": "module",
+  "bin": { "reposurgeon": "dist/cli.js" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "analyze": "tsx src/cli.ts analyze",
+    "api": "tsx src/api.ts",
+    "web:dev": "pnpm --dir web dev",
+    "web:build": "pnpm --dir web build",
+    "eval": "tsx scripts/eval.ts",
+    "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\" \"web/src/**/*.{ts,tsx}\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\" \"web/src/**/*.{ts,tsx}\"",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^1.0.8",
+    "@langchain/core": "^0.3.18",
+    "@langchain/langgraph": "^0.2.28",
+    "ai": "^4.0.30",
+    "@koa/bodyparser": "^5.1.0",
+    "@koa/router": "^12.0.1",
+    "better-sqlite3": "^11.3.0",
+    "commander": "^12.1.0",
+    "fast-glob": "^3.3.2",
+    "koa": "^2.15.3",
+    "pino": "^9.4.0",
+    "ts-morph": "^24.0.0",
+    "typescript": "^5.6.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/koa": "^2.15.0",
+    "@types/koa__router": "^12.0.4",
+    "@types/node": "^22.7.4",
+    "prettier": "^3.3.3",
+    "tsx": "^4.19.1"
+  }
+}

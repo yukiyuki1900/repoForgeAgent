@@ -1,0 +1,8 @@
+{
+  "title": "箭头函数组件识别",
+  "status": "expected-pass",
+  "why": "保护组件识别能力。Card 是 const Card = () => JSX 形式的箭头函数组件，这是现代 React 的主流写法。正则实现时期此用例失败：只在 rawKind === function 时才判定 component，箭头函数组件被归类为 variable，组件清单与拓扑图因此缺失大量节点。",
+  "expect": {
+    "components": ["Card", "Panel"]
+  }
+}

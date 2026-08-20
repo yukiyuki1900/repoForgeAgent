@@ -1,0 +1,17 @@
+node_modules/
+dist/
+web/dist/
+web/node_modules/
+
+# 环境变量与密钥（勿提交）
+.env
+.env.*
+!.env.example
+
+# 分析产物（索引、checkpoint、报告）
+.reposurgeon/
+
+*.log
+.DS_Store
+.idea/
+.vscode/

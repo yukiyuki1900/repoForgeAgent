@@ -1,0 +1,8 @@
+{
+  "title": "动态 import 循环依赖",
+  "status": "expected-pass",
+  "why": "保护动态 import() 边提取能力。路由表通过 () => import(\"./pages/Home\") 做分包，页面又反向引用路由配置，构成环。正则实现时期此用例失败：IMPORT_PATTERN 要求 import 关键字后跟空白，import( 形式不匹配，环退化成单向依赖。",
+  "expect": {
+    "cycles": [["src/pages/Home.tsx", "src/router.ts"]]
+  }
+}

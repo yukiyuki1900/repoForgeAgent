@@ -1,0 +1,8 @@
+{
+  "title": "JSX 渲染关系边",
+  "status": "expected-pass",
+  "why": "保护 render 关系边提取能力。import 只说明「引用了」，render 才说明「渲染了」，组件拓扑依赖后者。正则实现时期此用例失败：extractGraph 只产出 import 边，render / call / uses-hook 等关系边全部缺失。",
+  "expect": {
+    "edges": [{ "from": "src/App.tsx", "to": "src/Card.tsx", "kind": "render" }]
+  }
+}
