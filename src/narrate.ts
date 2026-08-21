@@ -20,6 +20,12 @@ const LIMITS = {
   modules: 12,
   hotspots: 15,
   cycles: 10,
+  /**
+   * 单个环内展示的文件数。
+   * 环的「数量」有限不代表体量有限——一个巨型强连通分量可能包含上千文件，
+   * 实测 3000 文件的环会让摘要膨胀到 15k tokens，因此必须逐环裁剪。
+   */
+  cycleFiles: 8,
   findingRules: 12,
   findingSamples: 3,
 } as const;
@@ -40,7 +46,12 @@ export interface NarrationContext {
   }>;
   layers: Array<{ name: string; dependsOn: string[] }>;
   hotspots: Array<{ path: string; lineCount: number; complexity: number; inbound: number; outbound: number }>;
-  cycles: Array<{ files: string[]; suggestedCut?: { from: string; to: string; references: number } }>;
+  cycles: Array<{
+    files: string[];
+    /** 环的真实规模，files 可能只是其中一部分 */
+    totalFiles: number;
+    suggestedCut?: { from: string; to: string; references: number };
+  }>;
   findings: Array<{ rule: string; severity: string; count: number; samples: string[] }>;
   /** 显式记录被裁掉的数量，避免「看起来覆盖了全部」的错觉 */
   truncated: { modules: number; hotspots: number; cycles: number; findingRules: number };
@@ -102,7 +113,9 @@ export function buildNarrationContext(input: {
     })),
     hotspots: allHotspots.slice(0, LIMITS.hotspots),
     cycles: allCycles.slice(0, LIMITS.cycles).map((finding) => ({
-      files: finding.files,
+      files: finding.files.slice(0, LIMITS.cycleFiles),
+      totalFiles: finding.files.length,
+      // 切点仍基于完整环计算，只有展示被裁剪
       suggestedCut: suggestCut(finding.files, edges, pathById),
     })),
     findings: groupedFindings.slice(0, LIMITS.findingRules),
@@ -196,7 +209,7 @@ const SYSTEM_PROMPT = [
   "规则：",
   "1. 只依据给定的事实作答，不要臆测未提供的信息；",
   "2. 循环依赖、复杂度、建议切点都已由静态分析算出，你的任务是解释危害并排定优先级，不要重新计算；",
-  "3. truncated 字段表示该类目还有多少条未列出，措辞上不要把已列出的当成全部；",
+  "3. truncated 字段表示该类目还有多少条未列出，cycles[].totalFiles 表示该环的真实文件数，措辞上不要把已列出的当成全部；",
   "4. 建议必须具体到可执行，避免「加强代码质量」这类空话。",
 ].join("\n");
 

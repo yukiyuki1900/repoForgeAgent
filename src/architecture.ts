@@ -87,10 +87,16 @@ export function analyzeArchitecture(
       to: byId.get(edge.to)?.path ?? edge.to,
     }));
 
+  // dependsOn 的目标是任意顶层目录名，可能含有 Mermaid 无法直接作为节点 id 的字符
+  const nodeId = (name: string) => name.replace(/[^A-Za-z0-9_]/g, "_");
+  const referenced = new Set(layers.flatMap((layer) => [layer.name, ...layer.dependsOn]));
+
   const mermaid = [
     "graph TD",
-    ...layers.map((layer) => `  ${layer.name}[${layer.name}]`),
-    ...layers.flatMap((layer) => layer.dependsOn.map((target) => `  ${layer.name} --> ${target}`)),
+    ...[...referenced].map((name) => `  ${nodeId(name)}["${name}"]`),
+    ...layers.flatMap((layer) =>
+      layer.dependsOn.map((target) => `  ${nodeId(layer.name)} --> ${nodeId(target)}`),
+    ),
   ].join("\n");
 
   return {

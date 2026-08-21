@@ -26,6 +26,7 @@ fixtures/<序号>-<用例名>/
 | `expect.cycles` | 期望检出的循环依赖，每项是构成环的文件路径集合（比较时忽略顺序） |
 | `expect.components` | 期望被识别为 `component` 的符号名 |
 | `expect.edges` | 期望存在的关系边 `{ from, to, kind }` |
+| `expect.metrics` | 维护性指标：`score` 总分、`dimensionCount` 参与评分的维度数 |
 | `expect.narration` | 送给 LLM 前的上下文摘要：`maxEstimatedTokens` 规模上限、`modules` 必须保留的模块聚合、`cycleCuts` 环上建议切点 |
 
 ## 四种结果
@@ -49,6 +50,8 @@ fixtures/<序号>-<用例名>/
 | `04-arrow-component` | expected-pass | 箭头函数组件识别 |
 | `05-jsx-render-edge` | expected-pass | JSX render 关系边提取 |
 | `06-narration-context` | expected-pass | 送给 LLM 之前的上下文压缩与环切点计算 |
+| `07-empty-repo` | expected-pass | 空仓库不凭空造分 |
+| `08-nested-cycles` | expected-pass | 交织环合并为单个强连通分量（保护迭代版 Tarjan） |
 
 ## 解析器替换前后
 

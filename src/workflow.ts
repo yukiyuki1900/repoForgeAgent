@@ -3,7 +3,7 @@ import { Annotation, END, MemorySaver, START, StateGraph } from "@langchain/lang
 import { analyzeArchitecture, type ArchitectureReport } from "./architecture.js";
 import { analyzeCycles, analyzeFrontend, calculateMetrics } from "./analyzers.js";
 import { extractGraph, graphToMermaid } from "./graph.js";
-import { resolveModel } from "./llm.js";
+import { parseQueryWithModel, resolveModel } from "./llm.js";
 import type {
   AnalysisResult,
   FileNode,
@@ -55,7 +55,10 @@ const State = Annotation.Root({
   narration: Annotation<Narration | undefined>(),
   mermaid: Annotation<string>(),
   report: Annotation<AnalysisResult | undefined>(),
-  currentStep: Annotation<string>(),
+  // 必须显式给 reducer：四个并行分析器处于同一个 superstep，都会写这个通道，
+  // 而无 reducer 的 LastValue 一步只接受一个值，否则每次运行都会抛
+  // InvalidUpdateError: LastValue can only receive one value per step
+  currentStep: Annotation<string>({ reducer: (_current, next) => next, default: () => "start" }),
 });
 
 export type WorkflowState = typeof State.State;
@@ -63,6 +66,28 @@ export type WorkflowState = typeof State.State;
 type QueryPlanner = (query: string) => QueryPlan | Promise<QueryPlan>;
 type Narrator = (context: NarrationContext) => Promise<Narration | undefined>;
 type NodeHandler = (state: WorkflowState) => Promise<Partial<WorkflowState>>;
+
+/**
+ * 节点级进度事件。
+ *
+ * 从自定义的 node 包装里发出，而不是依赖 LangGraph 的 streamEvents——
+ * 这样能拿到每个节点自己的产出摘要与耗时，也不受框架内部 API 变动影响。
+ * 并行分析器的 start 事件会交错出现，这本身就是「并行是真的」的证据。
+ */
+export interface ProgressEvent {
+  node: string;
+  phase: "start" | "end" | "error";
+  at: string;
+  durationMs?: number;
+  detail?: string;
+}
+
+export type ProgressListener = (event: ProgressEvent) => void;
+
+interface NodeContext {
+  runId?: string;
+  onProgress?: ProgressListener;
+}
 
 /** 未配置模型时返回 undefined，流水线降级为纯确定性分析 */
 const defaultNarrator: Narrator = async (context) => {
@@ -72,27 +97,137 @@ const defaultNarrator: Narrator = async (context) => {
 };
 
 /**
- * 包装节点：记录当前节点名，并把状态快照写入 SQLite。
+ * 有模型就让它把自然语言翻译成查询计划，否则回退到规则解析。
+ *
+ * 规则版靠 CONCEPT_MAP 做中文到标识符的映射，覆盖不了长尾表达；
+ * 这正是 LLM 该干的活——把意图翻译成检索词，而不是替代检索本身。
+ */
+const defaultQueryPlanner: QueryPlanner = async (query) => {
+  const model = resolveModel();
+  if (!model) return parseQueryPlan(query);
+
+  try {
+    return await parseQueryWithModel(model, query);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[retrieveContext] 查询计划模型调用失败，回退规则解析：${reason}`);
+    return parseQueryPlan(query);
+  }
+};
+
+/**
+ * 包装节点：发出进度事件、记录当前节点名、把状态快照写入 SQLite。
  *
  * 注意：这里的快照目前只用于事后排查，尚未实现基于它的断点恢复。
  */
-function node(name: string, handler: NodeHandler, runId?: string) {
+function node(name: string, handler: NodeHandler, context: NodeContext) {
   return async (state: WorkflowState): Promise<Partial<WorkflowState>> => {
-    const next: Partial<WorkflowState> = { ...(await handler(state)), currentStep: name };
-    if (runId) await saveCheckpoint(state.root, runId, { ...state, ...next });
-    return next;
+    const startedAt = Date.now();
+    context.onProgress?.({ node: name, phase: "start", at: new Date().toISOString() });
+
+    try {
+      const next: Partial<WorkflowState> = { ...(await handler(state)), currentStep: name };
+      if (context.runId) {
+        await saveCheckpoint(state.root, context.runId, summarize({ ...state, ...next }));
+      }
+
+      context.onProgress?.({
+        node: name,
+        phase: "end",
+        at: new Date().toISOString(),
+        durationMs: Date.now() - startedAt,
+        detail: describe(name, next),
+      });
+      return next;
+    } catch (error) {
+      context.onProgress?.({
+        node: name,
+        phase: "error",
+        at: new Date().toISOString(),
+        durationMs: Date.now() - startedAt,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   };
 }
 
-export function createAnalysisGraph(
-  runId?: string,
-  queryPlanner: QueryPlanner = parseQueryPlan,
-  narrator: Narrator = defaultNarrator,
-) {
+/**
+ * 落库前把状态压成摘要。
+ *
+ * 直接序列化整个 state 会把 contents（全仓源码）、files、symbols、edges
+ * 一并写进 SQLite——每个节点写一次，11 个节点就是十几倍源码体积的同步 IO，
+ * 大仓上足以阻塞事件循环甚至撑爆 JSON.stringify 的字符串上限。
+ * 快照本来就只用于事后排查，标量足够。
+ */
+function summarize(state: WorkflowState) {
+  return {
+    root: state.root,
+    query: state.query,
+    currentStep: state.currentStep,
+    stack: state.stack,
+    metrics: state.metrics,
+    narration: state.narration,
+    counts: {
+      files: state.files.length,
+      symbols: state.symbols.length,
+      edges: state.edges.length,
+      findings: state.findings.length,
+      retrieval: state.retrieval.length,
+    },
+  };
+}
+
+/** 每个节点用一句话汇报自己的产出，供 CLI 与前端直接展示 */
+function describe(name: string, next: Partial<WorkflowState>): string | undefined {
+  switch (name) {
+    case "scanFiles":
+      return `${next.files?.length ?? 0} 个文件`;
+    case "detectStack":
+      return next.stack?.framework
+        ? `${next.stack.framework}${next.stack.buildTool ? ` + ${next.stack.buildTool}` : ""}`
+        : "技术栈未识别";
+    case "parseSemantic":
+      return `${next.symbols?.length ?? 0} 个符号 · ${next.edges?.length ?? 0} 条关系边`;
+    case "analyzeArchitecture":
+      return `${next.architecture?.directories.length ?? 0} 个模块`;
+    case "dependency":
+      return `${next.findings?.length ?? 0} 处循环依赖`;
+    case "quality":
+      return next.metrics ? `维护性评分 ${next.metrics.score}` : undefined;
+    case "frontend":
+      return `${next.findings?.length ?? 0} 个前端问题`;
+    case "retrieveContext":
+      return next.retrieval?.length ? `${next.retrieval.length} 条检索结果` : "未提供检索问题";
+    case "narrate":
+      return next.narration ? "架构解读已生成" : "未配置模型，已跳过";
+    case "render":
+      return "报告已输出";
+    default:
+      return undefined;
+  }
+}
+
+export interface GraphOptions {
+  runId?: string;
+  queryPlanner?: QueryPlanner;
+  narrator?: Narrator;
+  onProgress?: ProgressListener;
+}
+
+export function createAnalysisGraph(options: GraphOptions = {}) {
+  const {
+    runId,
+    queryPlanner = defaultQueryPlanner,
+    narrator = defaultNarrator,
+    onProgress,
+  } = options;
+  const context: NodeContext = { runId, onProgress };
+
   const graph = new StateGraph(State)
     .addNode(
       "loadRepository",
-      node("loadRepository", async (state) => ({ root: path.resolve(state.root) }), runId),
+      node("loadRepository", async (state) => ({ root: path.resolve(state.root) }), context),
     )
     .addNode(
       "scanFiles",
@@ -102,7 +237,7 @@ export function createAnalysisGraph(
           const scanned = await scanFiles(state.root);
           return { files: scanned.files, contents: scanned.contents };
         },
-        runId,
+        context,
       ),
     )
     .addNode(
@@ -110,7 +245,7 @@ export function createAnalysisGraph(
       node(
         "detectStack",
         async (state) => ({ stack: await detectStack(state.root, state.contents) }),
-        runId,
+        context,
       ),
     )
     .addNode(
@@ -121,7 +256,7 @@ export function createAnalysisGraph(
           const { symbols, edges } = extractGraph(state.root, state.files, state.contents);
           return { symbols, edges };
         },
-        runId,
+        context,
       ),
     )
     // 注意：LangGraph 不允许节点名与 state 通道名重复，
@@ -133,24 +268,32 @@ export function createAnalysisGraph(
         async (state) => ({
           architecture: analyzeArchitecture(state.files, state.symbols, state.edges),
         }),
-        runId,
+        context,
       ),
     )
     .addNode(
       "dependency",
-      node("dependency", async (state) => ({ findings: analyzeCycles(state.files, state.edges) }), runId),
+      node(
+        "dependency",
+        async (state) => ({ findings: analyzeCycles(state.files, state.edges) }),
+        context,
+      ),
     )
     .addNode(
       "quality",
-      node("quality", async (state) => ({ metrics: calculateMetrics(state.files, state.edges) }), runId),
+      node(
+        "quality",
+        async (state) => ({ metrics: calculateMetrics(state.files, state.edges) }),
+        context,
+      ),
     )
     .addNode(
       "frontend",
-      node("frontend", async (state) => ({ findings: analyzeFrontend(state.contents) }), runId),
+      node("frontend", async (state) => ({ findings: analyzeFrontend(state.contents) }), context),
     )
-    .addNode("retrieveContext", node("retrieveContext", retrievalHandler(queryPlanner), runId))
-    .addNode("narrate", node("narrate", narrateHandler(narrator), runId))
-    .addNode("render", node("render", renderHandler, runId))
+    .addNode("retrieveContext", node("retrieveContext", retrievalHandler(queryPlanner), context))
+    .addNode("narrate", node("narrate", narrateHandler(narrator), context))
+    .addNode("render", node("render", renderHandler, context))
 
     .addEdge(START, "loadRepository")
     .addEdge("loadRepository", "scanFiles")
@@ -243,16 +386,24 @@ const renderHandler: NodeHandler = async (state) => {
   return { report: result, mermaid: result.mermaid };
 };
 
-export async function runAnalysis(
-  root: string,
-  query?: string,
-  runId = `analysis-${Date.now()}`,
-): Promise<WorkflowState> {
-  const graph = createAnalysisGraph(runId);
+export interface RunOptions {
+  query?: string;
+  runId?: string;
+  onProgress?: ProgressListener;
+}
+
+export async function runAnalysis(root: string, options: RunOptions = {}): Promise<WorkflowState> {
+  const runId = options.runId ?? `analysis-${Date.now()}`;
+  const graph = createAnalysisGraph({
+    runId,
+    onProgress: options.onProgress,
+  });
+
   const result = await graph.invoke(
-    { root, query, currentStep: "start" },
+    { root, query: options.query, currentStep: "start" },
     { configurable: { thread_id: runId } },
   );
-  await saveCheckpoint(root, runId, result);
+
+  await saveCheckpoint(root, runId, summarize(result));
   return result;
 }

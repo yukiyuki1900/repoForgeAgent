@@ -17,8 +17,17 @@ const IGNORED = [
   "**/.git/**",
   "**/dist/**",
   "**/build/**",
+  "**/out/**",
   "**/.next/**",
+  "**/.nuxt/**",
+  "**/.output/**",
+  "**/.turbo/**",
+  "**/storybook-static/**",
   "**/coverage/**",
+  // 本工具自己的产物目录，避免重复分析时把上一轮结果读进来
+  "**/.reposurgeon/**",
+  "**/*.min.js",
+  "**/*.bundle.js",
 ];
 
 export async function scanFiles(

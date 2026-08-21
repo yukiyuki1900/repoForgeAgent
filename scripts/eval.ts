@@ -37,6 +37,7 @@ interface Expectation {
     cycles?: string[][];
     components?: string[];
     edges?: Array<{ from: string; to: string; kind: string }>;
+    metrics?: { score?: number; dimensionCount?: number };
     narration?: {
       maxEstimatedTokens?: number;
       modules?: string[];
@@ -98,6 +99,25 @@ async function evaluateFixture(dir: string): Promise<FixtureResult> {
           pathById.get(edge.to) === expected.to,
       ),
     });
+  }
+
+  if (expectation.expect.metrics) {
+    const expected = expectation.expect.metrics;
+    const metrics = calculateMetrics(files, edges);
+
+    if (expected.score !== undefined) {
+      checks.push({
+        label: `维护性评分 ${metrics.score} = ${expected.score}`,
+        ok: metrics.score === expected.score,
+      });
+    }
+    if (expected.dimensionCount !== undefined) {
+      const count = Object.keys(metrics.dimensions).length;
+      checks.push({
+        label: `评分维度数 ${count} = ${expected.dimensionCount}`,
+        ok: count === expected.dimensionCount,
+      });
+    }
   }
 
   if (expectation.expect.narration) {

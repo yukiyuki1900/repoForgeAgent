@@ -44,12 +44,26 @@ export function extractGraph(
     if (source) parsed.push({ file, source });
   }
 
-  const context: ResolveContext = { root, byPath, compilerOptions };
+  const context: ResolveContext = {
+    root,
+    byPath,
+    byLowerPath: new Map(files.map((file) => [file.path.toLowerCase(), file])),
+    compilerOptions,
+    outsideRepo: new Set(),
+  };
 
   for (const { file, source } of parsed) {
     symbols.push(...extractSymbols(file, source));
     edges.push(...extractDependencyEdges(file, source, context));
     edges.push(...extractRenderEdges(file, source, context));
+  }
+
+  // 静默丢边会让循环依赖漏检、耦合度虚低，比直接报错更危险，至少要让它可见
+  if (context.outsideRepo.size > 0) {
+    console.warn(
+      `[graph] ${context.outsideRepo.size} 个模块解析到了仓库之外，未纳入依赖图` +
+        `（monorepo 兄弟包需要单独分析）`,
+    );
   }
 
   for (const file of files) {
@@ -65,7 +79,11 @@ export function extractGraph(
 interface ResolveContext {
   root: string;
   byPath: Map<string, FileNode>;
+  /** 大小写不敏感文件系统上，resolvedFileName 的大小写沿用 import 说明符 */
+  byLowerPath: Map<string, FileNode>;
   compilerOptions: ts.CompilerOptions;
+  /** 解析成功但落在仓库之外（monorepo 兄弟包、软链外部路径）的模块 */
+  outsideRepo: Set<string>;
 }
 
 function createProject(root: string): Project {
@@ -119,7 +137,19 @@ function resolveModule(
   if (!resolvedFileName) return undefined;
 
   const relative = path.relative(context.root, resolvedFileName).split(path.sep).join("/");
-  return context.byPath.get(relative);
+
+  const exact = context.byPath.get(relative);
+  if (exact) return exact;
+
+  // import "./Utils/x" 在大小写不敏感的文件系统上能解析成功，
+  // 但 resolvedFileName 会沿用说明符里的大小写，与扫描到的真实路径对不上
+  const insensitive = context.byLowerPath.get(relative.toLowerCase());
+  if (insensitive) return insensitive;
+
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    context.outsideRepo.add(relative);
+  }
+  return undefined;
 }
 
 function extractSymbols(file: FileNode, source: SourceFile): SymbolNode[] {
@@ -395,7 +425,9 @@ export function graphToMermaid(files: FileNode[], edges: RelationEdge[]): string
   const lines = ["graph TD"];
 
   for (const file of files) {
-    lines.push(`  ${labels.get(file.id)}[${file.path}]`);
+    // 路径里的方括号、圆括号会破坏 Mermaid 语法（Next.js 的 app/[id]/page.tsx 很常见），
+    // label 用引号包裹并转义内部引号
+    lines.push(`  ${labels.get(file.id)}["${file.path.replaceAll('"', "'")}"]`);
   }
   for (const edge of edges) {
     if (edge.kind !== "import") continue;
@@ -406,5 +438,6 @@ export function graphToMermaid(files: FileNode[], edges: RelationEdge[]): string
 }
 
 function toMermaidId(filePath: string): string {
-  return filePath.replaceAll("-", "_").replaceAll("/", "_").replaceAll(".", "_");
+  // 只保留标识符安全字符，其余一律折成下划线
+  return filePath.replace(/[^A-Za-z0-9_]/g, "_");
 }

@@ -80,11 +80,38 @@ function narrationSection(narration?: Narration): string[] {
   ];
 }
 
+/**
+ * HTML 转义。
+ *
+ * 报告里插值的内容有三个来源都不可信：文件路径、LLM 生成的叙述、源码片段。
+ * 架构叙述里出现 <Foo /> 这类组件名是常态，不转义会直接破坏页面结构。
+ */
+function escapeHtml(value: unknown): string {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function renderHtml(result: AnalysisResult): string {
   const findings =
     result.findings
-      .map((finding) => `${finding.severity}: ${finding.message} [${finding.files.join(", ")}]`)
+      .map(
+        (finding) =>
+          `${escapeHtml(finding.severity)}: ${escapeHtml(finding.message)} [${escapeHtml(finding.files.join(", "))}]`,
+      )
       .join("\n") || "未发现问题";
+
+  const narration = result.narration
+    ? `<p>${escapeHtml(result.narration.summary)}</p><ul>${result.narration.risks
+        .map(
+          (risk) =>
+            `<li><b>[${escapeHtml(risk.severity)}] ${escapeHtml(risk.title)}</b> — ${escapeHtml(risk.suggestion)}</li>`,
+        )
+        .join("")}</ul>`
+    : "<p><i>未配置模型，本次仅输出确定性分析结果。</i></p>";
 
   return `<!doctype html>
 <meta charset="utf-8">
@@ -94,19 +121,13 @@ function renderHtml(result: AnalysisResult): string {
   code, pre { background: #f4f4f5; padding: 12px; display: block; overflow: auto }
 </style>
 <h1>Repo Surgeon 分析报告</h1>
-<p>技术栈：${result.stack.framework ?? "未识别"} / ${result.stack.buildTool ?? "未识别"}</p>
+<p>技术栈：${escapeHtml(result.stack.framework ?? "未识别")} / ${escapeHtml(result.stack.buildTool ?? "未识别")}</p>
 <h2>指标</h2>
-<pre>${JSON.stringify(result.metrics, null, 2)}</pre>
+<pre>${escapeHtml(JSON.stringify(result.metrics, null, 2))}</pre>
 <h2>架构解读</h2>
-${
-  result.narration
-    ? `<p>${result.narration.summary}</p><ul>${result.narration.risks
-        .map((risk) => `<li><b>[${risk.severity}] ${risk.title}</b> — ${risk.suggestion}</li>`)
-        .join("")}</ul>`
-    : "<p><i>未配置模型，本次仅输出确定性分析结果。</i></p>"
-}
+${narration}
 <h2>Findings</h2>
 <pre>${findings}</pre>
 <h2>Mermaid</h2>
-<pre>${result.mermaid}</pre>`;
+<pre>${escapeHtml(result.mermaid)}</pre>`;
 }

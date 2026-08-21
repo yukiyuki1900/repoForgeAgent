@@ -6,6 +6,27 @@ export interface Finding {
   evidence?: string[];
 }
 
+export interface Narration {
+  summary: string;
+  layering: Array<{ layer: string; role: string }>;
+  risks: Array<{
+    title: string;
+    severity: "high" | "medium" | "low";
+    rationale: string;
+    suggestion: string;
+    relatedPaths: string[];
+  }>;
+}
+
+/** 节点级进度事件，与后端 workflow.ts 的 ProgressEvent 保持一致 */
+export interface ProgressEvent {
+  node: string;
+  phase: "start" | "end" | "error";
+  at: string;
+  durationMs?: number;
+  detail?: string;
+}
+
 export interface Report {
   root: string;
   stack: {
@@ -23,6 +44,7 @@ export interface Report {
   edges: Array<{ kind: string; from: string; to: string }>;
   findings: Finding[];
   metrics: { score: number; dimensions: Record<string, number> };
+  narration?: Narration;
   mermaid: string;
   generatedAt: string;
 }
@@ -35,11 +57,24 @@ export interface RetrievalResult {
   relatedPaths: string[];
 }
 
-export interface AnalysisResponse {
+/** POST /analysis 的 202 响应：任务已受理，进度走 SSE */
+export interface AnalysisAccepted {
   runId: string;
   status: string;
+  statusUrl: string;
+  eventsUrl: string;
+}
+
+/** GET /analysis/:runId 的响应 */
+export interface AnalysisStatus {
+  runId: string;
+  status: "running" | "completed" | "failed";
   currentStep: string;
-  report: Report;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+  events: ProgressEvent[];
+  report?: Report;
   queryPlan?: { concepts: string[]; symbolKinds: string[]; relationKinds: string[]; terms: string[] };
   retrieval?: RetrievalResult[];
 }

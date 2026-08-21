@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { runAnalysis, type WorkflowState } from "./workflow.js";
+import { runAnalysis, type ProgressEvent, type WorkflowState } from "./workflow.js";
 
 interface AnalyzeOptions {
   json?: boolean;
@@ -17,7 +17,11 @@ program
   .option("--query <query>", "自然语言检索问题")
   .option("--json", "仅输出 JSON")
   .action(async (directory: string, options: AnalyzeOptions) => {
-    const workflow = await runAnalysis(directory, options.query);
+    const workflow = await runAnalysis(directory, {
+      query: options.query,
+      // JSON 模式下保持输出纯净，不混入进度行
+      onProgress: options.json ? undefined : printProgress,
+    });
     if (!workflow.report) return;
 
     if (options.json) {
@@ -37,6 +41,16 @@ program
 
     console.log(formatSummary(workflow));
   });
+
+/** 节点结束时打一行，start 事件不输出，避免并行节点交错刷屏 */
+function printProgress(event: ProgressEvent): void {
+  if (event.phase === "start") return;
+
+  const mark = event.phase === "end" ? "✓" : "✗";
+  const elapsed = `${event.durationMs ?? 0}ms`.padStart(8);
+  const detail = event.detail ? `  ${event.detail}` : "";
+  console.log(`  ${mark} ${event.node.padEnd(20)}${elapsed}${detail}`);
+}
 
 function formatSummary(workflow: WorkflowState): string {
   const detail = workflow.retrieval.length

@@ -1,0 +1,8 @@
+{
+  "title": "空仓库不应凭空造分",
+  "status": "expected-pass",
+  "why": "目录里没有任何可分析的源码文件。修复前 calculateMetrics 会因为 complexity 与 coupling 各拿满分，给出 67 分的「健康」空仓库——分母用 Math.max(files.length, 1) 掩盖了空集。没有事实就不该有结论。",
+  "expect": {
+    "metrics": { "score": 0, "dimensionCount": 0 }
+  }
+}

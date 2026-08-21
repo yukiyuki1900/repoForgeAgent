@@ -83,7 +83,9 @@ export async function detectStack(
 
 async function readPackageJson(root: string): Promise<Record<string, any>> {
   try {
-    return JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+    const parsed = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+    // JSON.parse("null") 与 JSON.parse("[]") 都不会抛，但后续取 .dependencies 会崩
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch {
     // 纯源码仓库可能没有 package.json
     return {};
