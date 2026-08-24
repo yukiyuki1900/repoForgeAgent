@@ -1,0 +1,16 @@
+{
+  "title": "Vue SFC：alias 导入与 template 组件引用",
+  "status": "expected-pass",
+  "requires": ["@vue/compiler-sfc"],
+  "why": "Vue 项目普遍使用 @/ alias，且组件引用写在 template 而不是 script 里。此前 .vue 走正则回退：只认相对路径，alias 导入被整条丢弃，template 里的组件引用完全不可见——一个真实 Vue 仓库分析下来依赖图几乎是空的。现在用 @vue/compiler-sfc 抽出 script 块交给 ts-morph，模块解析与 TS 文件走同一条路径；template 标签按 PascalCase / kebab-case 双向匹配导入名产出 render 边。",
+  "expect": {
+    "components": ["OrderView", "OrderCard", "PriceTag"],
+    "edges": [
+      { "from": "src/views/OrderView.vue", "to": "src/components/OrderCard.vue", "kind": "import" },
+      { "from": "src/views/OrderView.vue", "to": "src/utils/price.ts", "kind": "import" },
+      { "from": "src/views/OrderView.vue", "to": "src/components/OrderCard.vue", "kind": "render" },
+      { "from": "src/views/OrderView.vue", "to": "src/components/PriceTag.vue", "kind": "render" },
+      { "from": "src/components/OrderCard.vue", "to": "src/utils/price.ts", "kind": "import" }
+    ]
+  }
+}

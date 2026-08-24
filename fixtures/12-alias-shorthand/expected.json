@@ -1,0 +1,12 @@
+{
+  "title": "vite.config 的 alias 简写属性与变量引用",
+  "status": "expected-pass",
+  "why": "真实项目里 alias 常常先声明成变量再以简写属性写进 resolve：const alias = { \"@\": pathResolve(\"src\") } 配 resolve: { alias }。此前提取器只认 PropertyAssignment（alias: {...}），ShorthandPropertyAssignment 被整体跳过，导致一个 319 文件的 Vue 仓库里 84 处 @/ 导入全部丢失。同时 replacement 是自定义函数 pathResolve(\"src\") 的调用结果，需要靠字面量启发式还原。",
+  "expect": {
+    "edges": [
+      { "from": "src/views/Detail.ts", "to": "src/components/Badge.ts", "kind": "import" },
+      { "from": "src/views/Detail.ts", "to": "src/utils/pad.ts", "kind": "import" },
+      { "from": "src/components/Badge.ts", "to": "src/utils/pad.ts", "kind": "import" }
+    ]
+  }
+}

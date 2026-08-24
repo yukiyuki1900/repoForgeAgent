@@ -192,3 +192,330 @@
   font-size: 12px;
   color: #4b6076;
 }
+
+/* 路径输入 + 目录选择器 */
+
+.path-input {
+  display: flex;
+  gap: 8px;
+}
+
+.path-input input {
+  flex: 1;
+  min-width: 0;
+}
+
+.browse-button {
+  padding: 0 16px;
+  border: 1px solid rgba(125, 164, 200, 0.4);
+  border-radius: 8px;
+  background: #fff;
+  color: #24384f;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.browse-button:hover {
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.notice.demo {
+  background: rgba(224, 163, 62, 0.1);
+  border-color: rgba(224, 163, 62, 0.3);
+}
+
+.demo-badge {
+  margin-right: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #e0a33e;
+  color: #fff;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.history-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.link-button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: #3b82f6;
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.picker-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 35, 63, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.picker {
+  width: min(620px, 92vw);
+  max-height: 78vh;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(16, 35, 63, 0.28);
+  overflow: hidden;
+}
+
+.picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(125, 164, 200, 0.2);
+}
+
+.picker-header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.picker-close {
+  border: none;
+  background: none;
+  font-size: 16px;
+  color: #6b7f96;
+  cursor: pointer;
+}
+
+.picker-shortcuts {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px 0;
+}
+
+.picker-shortcuts button {
+  padding: 4px 12px;
+  border: 1px solid rgba(125, 164, 200, 0.32);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 12px;
+  color: #4b6076;
+  cursor: pointer;
+}
+
+.picker-shortcuts button:hover {
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+.picker-path {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+}
+
+.picker-up {
+  padding: 4px 10px;
+  border: 1px solid rgba(125, 164, 200, 0.32);
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.picker-up:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.picker-path code {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: rgba(16, 35, 63, 0.05);
+  font-size: 12px;
+  color: #24384f;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.picker-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 12px;
+  min-height: 200px;
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  font-size: 13px;
+  color: #24384f;
+  cursor: pointer;
+}
+
+.picker-row:hover {
+  background: rgba(231, 243, 255, 0.7);
+}
+
+.picker-icon {
+  color: #7da4c8;
+}
+
+.picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.picker-tag.repo {
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+}
+
+.picker-tag.analyzed {
+  background: rgba(47, 158, 110, 0.12);
+  color: #2f9e6e;
+}
+
+.picker-error {
+  padding: 14px;
+  color: #d5533f;
+  font-size: 13px;
+}
+
+.picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px;
+  border-top: 1px solid rgba(125, 164, 200, 0.2);
+}
+
+.picker-hint {
+  font-size: 12px;
+  color: #6b7f96;
+}
+
+.picker-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.picker-actions button:not(.primary-button) {
+  padding: 8px 16px;
+  border: 1px solid rgba(125, 164, 200, 0.4);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* 架构图渲染失败时的兜底 */
+
+.mermaid-fallback {
+  padding: 16px;
+  border: 1px dashed rgba(213, 83, 63, 0.35);
+  border-radius: 10px;
+  background: rgba(213, 83, 63, 0.04);
+}
+
+.mermaid-fallback p {
+  margin: 0 0 10px;
+  color: #d5533f;
+  font-size: 13px;
+}
+
+.mermaid-fallback summary {
+  cursor: pointer;
+  color: #6b7f96;
+  font-size: 12px;
+}
+
+.mermaid-fallback pre {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(16, 35, 63, 0.05);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+
+/* 原生目录选择后的候选列表 */
+
+.locate-matches {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.locate-hint {
+  font-size: 12px;
+  color: #6b7f96;
+}
+
+.locate-match {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(125, 164, 200, 0.32);
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.locate-match:hover {
+  border-color: #3b82f6;
+  background: rgba(231, 243, 255, 0.6);
+}
+
+.locate-match code {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: #24384f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browse-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.picker-tag.exact {
+  background: rgba(47, 158, 110, 0.18);
+  color: #1f7a55;
+  font-weight: 600;
+}

@@ -115,10 +115,13 @@ function renderHtml(result: AnalysisResult): string {
 
   return `<!doctype html>
 <meta charset="utf-8">
-<title>Repo Surgeon Report</title>
+<title>Repo Surgeon 分析报告</title>
 <style>
-  body { font: 15px system-ui; max-width: 960px; margin: 40px auto; line-height: 1.6 }
+  body { font: 15px system-ui; max-width: 960px; margin: 40px auto; line-height: 1.6; color: #24384f }
   code, pre { background: #f4f4f5; padding: 12px; display: block; overflow: auto }
+  .diagram { background: #fff; border: 1px solid #e4e9f0; border-radius: 10px; padding: 16px; overflow: auto }
+  .diagram-source { margin-top: 12px }
+  summary { cursor: pointer; color: #6b7f96; font-size: 13px }
 </style>
 <h1>Repo Surgeon 分析报告</h1>
 <p>技术栈：${escapeHtml(result.stack.framework ?? "未识别")} / ${escapeHtml(result.stack.buildTool ?? "未识别")}</p>
@@ -128,6 +131,22 @@ function renderHtml(result: AnalysisResult): string {
 ${narration}
 <h2>Findings</h2>
 <pre>${findings}</pre>
-<h2>Mermaid</h2>
-<pre>${escapeHtml(result.mermaid)}</pre>`;
+<h2>架构图</h2>
+<div class="diagram"><pre class="mermaid">${escapeHtml(result.mermaid)}</pre></div>
+<details class="diagram-source">
+  <summary>查看 Mermaid 源码</summary>
+  <pre>${escapeHtml(result.mermaid)}</pre>
+</details>
+<script type="module">
+  // 离线打开时 CDN 不可达，图会退化为源码文本，上面的 details 里也留了一份
+  try {
+    const { default: mermaid } = await import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs");
+    mermaid.initialize({ startOnLoad: true, theme: "base" });
+  } catch {
+    document.querySelector(".diagram").insertAdjacentHTML(
+      "afterbegin",
+      "<p style=\\"color:#6b7f96;font-size:13px\\">未能加载 Mermaid（离线环境），以下为图源码：</p>",
+    );
+  }
+</script>`;
 }

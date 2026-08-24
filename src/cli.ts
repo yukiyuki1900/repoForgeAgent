@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import path from "node:path";
 import { Command } from "commander";
 import { runAnalysis, type ProgressEvent, type WorkflowState } from "./workflow.js";
 
@@ -61,15 +62,32 @@ function formatSummary(workflow: WorkflowState): string {
     ? `架构解读：${workflow.narration.summary}`
     : "架构解读：未配置模型，仅输出确定性分析结果";
 
+  const artifacts = path.join(workflow.root, ".reposurgeon");
+
   return [
     `分析完成：${workflow.files.length} 个文件，${workflow.edges.length} 条依赖边，${workflow.findings.length} 个发现`,
-    `当前节点：${workflow.currentStep}`,
     narration,
     detail,
+    "",
+    `产物目录：${artifacts}`,
+    `  报告   ${path.join(artifacts, "reports")}/report.{html,md,json}`,
+    `  索引   ${path.join(artifacts, "index.db")}`,
+    `  在 Web 看板里填入 ${workflow.root} 可直接加载这次结果`,
   ].join("\n");
 }
 
 program.parseAsync().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
+  console.error(formatFatal(error));
   process.exitCode = 1;
 });
+
+/** 依赖缺失时给出可操作的下一步，而不是甩一段模块解析栈 */
+function formatFatal(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+
+  if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
+    return `${message}\n\n依赖可能未安装或已过期（拉取新代码后需要重新安装），请先执行：\n  pnpm install`;
+  }
+  return message;
+}

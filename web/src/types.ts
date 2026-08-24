@@ -57,6 +57,52 @@ export interface RetrievalResult {
   relatedPaths: string[];
 }
 
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  /** 含 package.json，大概率是一个可分析的仓库 */
+  isRepo: boolean;
+  /** 已经有 .reposurgeon 索引，说明分析过 */
+  analyzed: boolean;
+}
+
+export interface BrowseResponse {
+  path: string;
+  parent: string | null;
+  isRepo: boolean;
+  analyzed: boolean;
+  entries: DirectoryEntry[];
+}
+
+export interface RootsResponse {
+  roots: Array<{ label: string; path: string }>;
+}
+
+/** POST /fs/locate 的候选结果：按目录特征匹配度排序 */
+export interface LocateMatch {
+  path: string;
+  score: number;
+  /** package.json 内容完全一致，基本可认定就是所选目录 */
+  exact: boolean;
+  isRepo: boolean;
+  analyzed: boolean;
+}
+
+export interface LocateResponse {
+  matches: LocateMatch[];
+  /** 判据足够强，可直接采用第一个而不必再问用户 */
+  confident: boolean;
+}
+
+export interface RunSummary {
+  id: number;
+  generatedAt: string;
+  files: number;
+  findings: number;
+  score: number | null;
+  framework: string | null;
+}
+
 /** POST /analysis 的 202 响应：任务已受理，进度走 SSE */
 export interface AnalysisAccepted {
   runId: string;

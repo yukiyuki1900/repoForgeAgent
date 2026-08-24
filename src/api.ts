@@ -3,14 +3,25 @@ import Koa from "koa";
 import { bodyParser } from "@koa/bodyparser";
 import Router from "@koa/router";
 import { randomUUID } from "node:crypto";
-import { statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import type { AnalysisResult } from "./model.js";
 import type { QueryPlan, RetrievalResult } from "./retrieval.js";
+import { locateDirectories, type Fingerprint } from "./locate.js";
+import { readLatestRun, readRunSummaries } from "./storage.js";
 import { runAnalysis, type ProgressEvent } from "./workflow.js";
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://127.0.0.1:5173";
+/**
+ * 用专用变量名而不是通用的 PORT。
+ *
+ * 容器、PaaS、CI 普遍会注入 PORT，一旦读它，API 就会监听一个意外端口，
+ * 而前端 vite proxy 仍指向 3100——表现是页面能开、接口全挂，极难排查。
+ */
 const DEFAULT_PORT = 3100;
+const API_PORT = Number(process.env.REPOSURGEON_API_PORT ?? DEFAULT_PORT);
 /** 已完成的 run 保留上限，超出后按开始时间淘汰最旧的 */
 const MAX_RETAINED_RUNS = 20;
 
@@ -155,6 +166,131 @@ router.get("/analysis/:runId/events", (ctx) => {
   ctx.req.on("close", cleanup);
 });
 
+/** 目录浏览时跳过的噪音目录，避免用户在一堆无关目录里翻找 */
+const BROWSE_SKIP = new Set([
+  "node_modules",
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  "target",
+  "vendor",
+]);
+
+/**
+ * 目录浏览。
+ *
+ * 浏览器出于安全限制拿不到本地目录的绝对路径（`webkitdirectory` 与
+ * File System Access API 都只给相对路径或句柄），所以目录选择必须由
+ * 后端提供——服务本来就跑在 127.0.0.1 上，读的是同一台机器的文件系统。
+ * 只返回目录名，不返回任何文件内容。
+ */
+router.get("/fs/browse", (ctx) => {
+  const requested = typeof ctx.query.path === "string" && ctx.query.path ? ctx.query.path : homedir();
+  const current = path.resolve(requested);
+
+  if (!isDirectory(current)) {
+    ctx.status = 404;
+    ctx.body = { error: `not a directory: ${current}` };
+    return;
+  }
+
+  let entries: Array<{ name: string; path: string; isRepo: boolean; analyzed: boolean }>;
+  try {
+    entries = readdirSync(current, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .filter((entry) => !entry.name.startsWith(".") && !BROWSE_SKIP.has(entry.name))
+      .map((entry) => {
+        const full = path.join(current, entry.name);
+        return {
+          name: entry.name,
+          path: full,
+          isRepo: existsSync(path.join(full, "package.json")),
+          analyzed: existsSync(path.join(full, ".reposurgeon", "index.db")),
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch (error) {
+    ctx.status = 403;
+    ctx.body = { error: error instanceof Error ? error.message : String(error) };
+    return;
+  }
+
+  const parent = path.dirname(current);
+
+  ctx.body = {
+    path: current,
+    parent: parent === current ? null : parent,
+    isRepo: existsSync(path.join(current, "package.json")),
+    analyzed: existsSync(path.join(current, ".reposurgeon", "index.db")),
+    entries,
+  };
+});
+
+/**
+ * 根据目录名与顶层条目指纹反查绝对路径。
+ *
+ * 浏览器不会给出所选目录的绝对路径，但本服务就在同一台机器上，
+ * 由它来定位即可。实现见 locate.ts。
+ */
+router.post("/fs/locate", (ctx) => {
+  const body = (ctx.request.body ?? {}) as { name?: string } & Fingerprint;
+  if (!body.name) {
+    ctx.status = 400;
+    ctx.body = { error: "name is required" };
+    return;
+  }
+
+  ctx.body = locateDirectories(body.name, {
+    entries: body.entries,
+    packageHash: body.packageHash,
+    packageName: body.packageName,
+  });
+});
+
+/** 常用起点，省去用户从根目录一级级点进来 */
+router.get("/fs/roots", (ctx) => {
+  const candidates = [
+    { label: "当前工作目录", path: process.cwd() },
+    { label: "用户主目录", path: homedir() },
+  ];
+  ctx.body = { roots: candidates.filter((item) => isDirectory(item.path)) };
+});
+
+/**
+ * 某个仓库的历史分析记录。
+ *
+ * CLI 与 API 是两个进程，内存不共享；但 `pnpm analyze` 的产物写在目标仓库的
+ * .reposurgeon/index.db 里，读它就能在 Web 端看到命令行跑过的结果。
+ */
+router.get("/repo/runs", (ctx) => {
+  const root = typeof ctx.query.root === "string" ? ctx.query.root : "";
+  if (!root || !isDirectory(root)) {
+    ctx.status = 400;
+    ctx.body = { error: "root must be an existing directory" };
+    return;
+  }
+  ctx.body = { root: path.resolve(root), runs: readRunSummaries(root) };
+});
+
+/** 最近一次分析的完整报告，用于直接在 Web 端查看 CLI 的分析结果 */
+router.get("/repo/runs/latest", (ctx) => {
+  const root = typeof ctx.query.root === "string" ? ctx.query.root : "";
+  if (!root || !isDirectory(root)) {
+    ctx.status = 400;
+    ctx.body = { error: "root must be an existing directory" };
+    return;
+  }
+
+  const report = readLatestRun(root);
+  if (!report) {
+    ctx.status = 404;
+    ctx.body = { error: "no previous analysis found for this repository" };
+    return;
+  }
+  ctx.body = { root: path.resolve(root), report };
+});
+
 async function execute(record: RunRecord): Promise<void> {
   try {
     const state = await runAnalysis(record.root, {
@@ -248,6 +384,6 @@ function evictOldRuns(): void {
 
 app.use(bodyParser()).use(router.routes()).use(router.allowedMethods());
 
-app.listen(Number(process.env.PORT ?? DEFAULT_PORT), "127.0.0.1", () => {
-  console.log("Repo Surgeon API listening");
+app.listen(API_PORT, "127.0.0.1", () => {
+  console.log(`Repo Surgeon API listening on http://127.0.0.1:${API_PORT}`);
 });

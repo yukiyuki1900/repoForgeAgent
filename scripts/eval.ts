@@ -14,6 +14,7 @@
  * 避免产生 .reposurgeon 目录等副作用。
  */
 import { readdir, readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyzeCycles, analyzeFrontend, calculateMetrics } from "../src/analyzers.js";
@@ -27,17 +28,36 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES_DIR = path.join(ROOT, "fixtures");
 
 type FixtureStatus = "expected-pass" | "known-failure";
-type Outcome = "PASS" | "KNOWN-FAIL" | "REGRESSION" | "FIXED";
+type Outcome = "PASS" | "KNOWN-FAIL" | "REGRESSION" | "FIXED" | "SKIPPED";
+
+const requireFrom = createRequire(import.meta.url);
+
+/** 依赖装没装是环境问题，不该和能力回归混为一谈 */
+function isInstalled(packageName: string): boolean {
+  try {
+    requireFrom.resolve(packageName);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface Expectation {
   title: string;
   status: FixtureStatus;
   why: string;
+  /** 该用例依赖的可选包，缺失时跳过而不是判为回归 */
+  requires?: string[];
   expect: {
     cycles?: string[][];
     components?: string[];
     edges?: Array<{ from: string; to: string; kind: string }>;
     metrics?: { score?: number; dimensionCount?: number };
+    architecture?: {
+      sourceRoot?: string;
+      modules?: string[];
+      minMermaidLines?: number;
+    };
     narration?: {
       maxEstimatedTokens?: number;
       modules?: string[];
@@ -56,6 +76,7 @@ interface FixtureResult {
   expectation: Expectation;
   checks: Check[];
   outcome: Outcome;
+  missing?: string[];
   stats: { files: number; symbols: number; edges: number; cycles: number };
 }
 
@@ -63,6 +84,18 @@ async function evaluateFixture(dir: string): Promise<FixtureResult> {
   const expectation: Expectation = JSON.parse(
     await readFile(path.join(dir, "expected.json"), "utf8"),
   );
+
+  const missing = (expectation.requires ?? []).filter((name) => !isInstalled(name));
+  if (missing.length > 0) {
+    return {
+      name: path.basename(dir),
+      expectation,
+      checks: [],
+      outcome: "SKIPPED",
+      missing,
+      stats: { files: 0, symbols: 0, edges: 0, cycles: 0 },
+    };
+  }
 
   const { files, contents } = await scanFiles(dir);
   const { symbols, edges } = extractGraph(dir, files, contents);
@@ -116,6 +149,31 @@ async function evaluateFixture(dir: string): Promise<FixtureResult> {
       checks.push({
         label: `评分维度数 ${count} = ${expected.dimensionCount}`,
         ok: count === expected.dimensionCount,
+      });
+    }
+  }
+
+  if (expectation.expect.architecture) {
+    const expected = expectation.expect.architecture;
+    const architecture = analyzeArchitecture(files, symbols, edges);
+
+    if (expected.sourceRoot !== undefined) {
+      checks.push({
+        label: `源码根目录 "${architecture.sourceRoot}" = "${expected.sourceRoot}"`,
+        ok: architecture.sourceRoot === expected.sourceRoot,
+      });
+    }
+    for (const module of expected.modules ?? []) {
+      checks.push({
+        label: `模块聚合包含 ${module}`,
+        ok: architecture.directories.some((item) => item.path === module),
+      });
+    }
+    if (expected.minMermaidLines !== undefined) {
+      const lines = architecture.mermaid.split("\n").length;
+      checks.push({
+        label: `Mermaid ${lines} 行 ≥ ${expected.minMermaidLines}`,
+        ok: lines >= expected.minMermaidLines,
       });
     }
   }
@@ -207,15 +265,22 @@ const OUTCOME_MARK: Record<Outcome, string> = {
   "KNOWN-FAIL": "· KNOWN-FAIL",
   REGRESSION: "✗ REGRESSION",
   FIXED: "★ FIXED",
+  SKIPPED: "○ SKIPPED",
 };
 
 function printResult(result: FixtureResult): void {
   const passedCount = result.checks.filter((check) => check.ok).length;
-  const ratio = `${passedCount}/${result.checks.length}`;
+  const ratio = result.outcome === "SKIPPED" ? "—" : `${passedCount}/${result.checks.length}`;
 
   console.log(
     `${OUTCOME_MARK[result.outcome].padEnd(16)}${result.name.padEnd(26)}${ratio.padEnd(8)}${result.expectation.title}`,
   );
+
+  if (result.outcome === "SKIPPED") {
+    console.log(`                  缺少可选依赖：${result.missing?.join("、")}（执行 pnpm install 后可运行）`);
+    console.log("");
+    return;
+  }
   console.log(
     `                  扫描 ${result.stats.files} 文件 · ${result.stats.symbols} 符号 · ${result.stats.edges} 依赖边 · ${result.stats.cycles} 个环`,
   );
@@ -254,12 +319,18 @@ async function main(): Promise<void> {
   const passed = tally("PASS");
   const regressions = tally("REGRESSION");
 
+  const skipped = tally("SKIPPED");
+  const evaluated = results.length - skipped;
+
   console.log("─".repeat(72));
   console.log(
-    `汇总：${passed} PASS · ${tally("KNOWN-FAIL")} KNOWN-FAIL · ${regressions} REGRESSION · ${tally("FIXED")} FIXED`,
+    `汇总：${passed} PASS · ${tally("KNOWN-FAIL")} KNOWN-FAIL · ${regressions} REGRESSION · ${tally("FIXED")} FIXED` +
+      (skipped > 0 ? ` · ${skipped} SKIPPED` : ""),
   );
   console.log(
-    `真实通过率：${passed}/${results.length}（${Math.round((passed / results.length) * 100)}%）\n`,
+    `真实通过率：${passed}/${evaluated}（${evaluated ? Math.round((passed / evaluated) * 100) : 0}%）` +
+      (skipped > 0 ? `，另有 ${skipped} 个用例因缺少可选依赖被跳过` : "") +
+      "\n",
   );
 
   if (regressions > 0) {

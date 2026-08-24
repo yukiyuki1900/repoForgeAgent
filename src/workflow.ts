@@ -1,3 +1,4 @@
+import { setMaxListeners } from "node:events";
 import path from "node:path";
 import { Annotation, END, MemorySaver, START, StateGraph } from "@langchain/langgraph";
 import { analyzeArchitecture, type ArchitectureReport } from "./architecture.js";
@@ -235,6 +236,18 @@ export function createAnalysisGraph(options: GraphOptions = {}) {
         "scanFiles",
         async (state) => {
           const scanned = await scanFiles(state.root);
+
+          // 扫不到文件时继续跑下去只会产出一份「0 文件、空架构图」的报告，
+          // 看起来像分析成功了。绝大多数情况是路径指错了，直接失败更有用。
+          if (scanned.files.length === 0) {
+            throw new Error(
+              `在 ${path.resolve(state.root)} 下没有找到可分析的源码文件（.ts / .tsx / .js / .jsx / .vue）。\n` +
+                "请确认：\n" +
+                "  1. 路径指向的是项目根目录，而不是它的上级目录\n" +
+                "  2. 源码没有全部落在 node_modules / dist / build 等被忽略的目录里",
+            );
+          }
+
           return { files: scanned.files, contents: scanned.contents };
         },
         context,
@@ -391,6 +404,14 @@ export interface RunOptions {
   runId?: string;
   onProgress?: ProgressListener;
 }
+
+/**
+ * LangGraph 会给同一个 AbortSignal 逐节点挂监听器，节点数超过 Node 默认的 10 个
+ * 就会打印 MaxListenersExceededWarning。这里按节点数留出余量，
+ * 避免每次运行都在输出里插一条无害但扎眼的警告。
+ */
+const NODE_COUNT = 11;
+setMaxListeners(NODE_COUNT * 2);
 
 export async function runAnalysis(root: string, options: RunOptions = {}): Promise<WorkflowState> {
   const runId = options.runId ?? `analysis-${Date.now()}`;

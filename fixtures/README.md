@@ -23,10 +23,12 @@ fixtures/<序号>-<用例名>/
 | `title` | 用例标题 |
 | `status` | `expected-pass`：当前必须通过；`known-failure`：当前已知做不到 |
 | `why` | 为什么现在做不到——写清楚失败的根因，而不是笼统的「未实现」 |
+| `requires` | 该用例依赖的可选包；缺失时标记为 `SKIPPED` 而不是判为回归 |
 | `expect.cycles` | 期望检出的循环依赖，每项是构成环的文件路径集合（比较时忽略顺序） |
 | `expect.components` | 期望被识别为 `component` 的符号名 |
 | `expect.edges` | 期望存在的关系边 `{ from, to, kind }` |
 | `expect.metrics` | 维护性指标：`score` 总分、`dimensionCount` 参与评分的维度数 |
+| `expect.architecture` | 架构聚合：`sourceRoot` 剥离出的公共前缀、`modules` 必须聚出的模块、`minMermaidLines` 图的最小行数 |
 | `expect.narration` | 送给 LLM 前的上下文摘要：`maxEstimatedTokens` 规模上限、`modules` 必须保留的模块聚合、`cycleCuts` 环上建议切点 |
 
 ## 四种结果
@@ -37,6 +39,7 @@ fixtures/<序号>-<用例名>/
 | `KNOWN-FAIL` | `known-failure` 用例仍然失败，符合当前预期 | 否 |
 | `REGRESSION` | `expected-pass` 用例挂了，能力出现回退 | **是**，退出码 1 |
 | `FIXED` | `known-failure` 用例开始通过，需把 `status` 改为 `expected-pass` | 否，但会提示 |
+| `SKIPPED` | `requires` 声明的可选依赖没装，用例未执行 | 否 |
 
 这样设计的目的：**已知的短板不会污染红绿信号，但也不会被悄悄忘掉。** 每次补齐一项能力，就有一个用例从 `KNOWN-FAIL` 变成 `FIXED`，通过率的变化即是能力提升的证据。
 
@@ -52,6 +55,10 @@ fixtures/<序号>-<用例名>/
 | `06-narration-context` | expected-pass | 送给 LLM 之前的上下文压缩与环切点计算 |
 | `07-empty-repo` | expected-pass | 空仓库不凭空造分 |
 | `08-nested-cycles` | expected-pass | 交织环合并为单个强连通分量（保护迭代版 Tarjan） |
+| `09-src-layout` | expected-pass | `src/` 前缀下的分层项目必须能聚出模块 |
+| `10-vue-sfc` | expected-pass | Vue SFC 的 alias 导入与 template 组件引用 |
+| `11-vite-alias` | expected-pass | `vite.config` 里 `resolve.alias` 的静态提取 |
+| `12-alias-shorthand` | expected-pass | alias 声明为变量并以简写属性写入 `resolve` |
 
 ## 解析器替换前后
 

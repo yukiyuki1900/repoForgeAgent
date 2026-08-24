@@ -1,0 +1,12 @@
+{
+  "title": "vite.config 里的 alias 必须被解析",
+  "status": "expected-pass",
+  "why": "前端项目普遍把 alias 配在 vite.config 而不写进 tsconfig 的 paths。此前只读 tsconfig，实测一个 319 文件的 Vue 仓库因此丢掉 84 条依赖，且全部集中在 pages / components / layouts 这些最关键的位置。现在静态提取 vite / webpack 配置里的 resolve.alias——只解析 AST，不执行配置文件。用例同时覆盖对象式 alias、fileURLToPath(new URL(...)) 包装，以及 @ 与 ~utils 两个前缀的边界匹配。",
+  "expect": {
+    "edges": [
+      { "from": "src/views/Dashboard.ts", "to": "src/components/Panel.ts", "kind": "import" },
+      { "from": "src/views/Dashboard.ts", "to": "src/utils/format.ts", "kind": "import" },
+      { "from": "src/components/Panel.ts", "to": "src/utils/format.ts", "kind": "import" }
+    ]
+  }
+}

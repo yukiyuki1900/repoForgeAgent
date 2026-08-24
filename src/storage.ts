@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { AnalysisResult } from "./model.js";
@@ -80,4 +81,71 @@ function serializeState(state: unknown): string {
   return JSON.stringify(state, (_key, value) =>
     value instanceof Map ? Object.fromEntries(value) : value,
   );
+}
+
+export interface RunSummary {
+  id: number;
+  generatedAt: string;
+  files: number;
+  findings: number;
+  score: number | null;
+  framework: string | null;
+}
+
+function indexPath(root: string): string {
+  return path.join(root, ".reposurgeon", "index.db");
+}
+
+/**
+ * 读取某个仓库过往的分析记录。
+ *
+ * CLI 与 API 是两个进程，内存不共享，但产物都落在目标仓库的
+ * .reposurgeon/index.db 里——读它就能让 Web 端看到命令行跑过的结果。
+ *
+ * 摘要字段用 SQL 的 json_extract 取，避免把每条几 MB 的 payload
+ * 全部反序列化到 Node 侧。
+ */
+export function readRunSummaries(root: string, limit = 10): RunSummary[] {
+  const dbPath = indexPath(root);
+  if (!existsSync(dbPath)) return [];
+
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    return db
+      .prepare(
+        `SELECT id,
+                generated_at AS generatedAt,
+                json_array_length(payload, '$.files')    AS files,
+                json_array_length(payload, '$.findings') AS findings,
+                json_extract(payload, '$.metrics.score') AS score,
+                json_extract(payload, '$.stack.framework') AS framework
+         FROM runs
+         ORDER BY id DESC
+         LIMIT ?`,
+      )
+      .all(limit) as RunSummary[];
+  } catch {
+    // 索引可能是旧版本写的，或表还不存在
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
+/** 读取最近一次分析的完整报告 */
+export function readLatestRun(root: string): AnalysisResult | undefined {
+  const dbPath = indexPath(root);
+  if (!existsSync(dbPath)) return undefined;
+
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    const row = db.prepare("SELECT payload FROM runs ORDER BY id DESC LIMIT 1").get() as
+      | { payload: string }
+      | undefined;
+    return row ? (JSON.parse(row.payload) as AnalysisResult) : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    db.close();
+  }
 }

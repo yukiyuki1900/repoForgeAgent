@@ -1,0 +1,12 @@
+{
+  "title": "src 前缀下的分层项目必须能聚出模块",
+  "status": "expected-pass",
+  "why": "绝大多数前端项目源码都在 src/ 下。此前架构聚合直接取 path.split(\"/\")[0]，只会聚出「src」这一个模块，导致分层为空、Mermaid 退化成一行 graph TD——真实项目上架构图永远是空白的。此前的 fixture 把目录放在根级，恰好绕开了这个场景。现在先剥离所有文件共享的目录前缀再聚合。",
+  "expect": {
+    "architecture": {
+      "sourceRoot": "src",
+      "modules": ["pages", "components", "composables", "services"],
+      "minMermaidLines": 6
+    }
+  }
+}

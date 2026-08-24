@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import mermaid from "mermaid";
@@ -6,11 +6,17 @@ import { demoEvents, demoReport, demoRetrieval } from "./demo";
 import type {
   AnalysisAccepted,
   AnalysisStatus,
+  BrowseResponse,
+  DirectoryEntry,
   Finding,
+  LocateMatch,
+  LocateResponse,
   Narration,
   ProgressEvent,
   Report,
   RetrievalResult,
+  RootsResponse,
+  RunSummary,
 } from "./types";
 import "./styles.css";
 import "./panels.css";
@@ -40,6 +46,77 @@ const NODE_LABELS: Record<string, string> = {
   render: "生成报告",
 };
 
+/**
+ * File System Access API。
+ *
+ * 相比 `<input webkitdirectory>`，它是惰性的——只拿目录句柄，不枚举内容。
+ * 前端项目的 node_modules 动辄十几万文件，webkitdirectory 会直接把页面卡死。
+ * 代价是仍然拿不到绝对路径，需要后端按目录名反查。
+ */
+interface FileEntryHandle {
+  kind: "file" | "directory";
+  getFile?: () => Promise<{ text: () => Promise<string> }>;
+}
+
+interface DirectoryHandle {
+  name: string;
+  entries: () => AsyncIterableIterator<[string, FileEntryHandle]>;
+}
+
+type DirectoryPickerWindow = Window & {
+  showDirectoryPicker?: (options?: { mode?: "read" | "readwrite" }) => Promise<DirectoryHandle>;
+};
+
+/** 顶层条目数量上限；正常项目远不到这个量级 */
+const FINGERPRINT_LIMIT = 200;
+
+/**
+ * 采集目录特征交给后端反查。
+ *
+ * 只发目录名是不够的——开发机上同名目录很常见（monorepo 的 apps/x、
+ * 另一个仓库的 pages/x…），而它们的顶层结构还高度雷同。
+ * package.json 的完整内容哈希判别力强得多：同名项目的依赖与版本号
+ * 几乎不可能逐字节一致。
+ */
+async function collectFingerprint(handle: DirectoryHandle) {
+  const entries: string[] = [];
+  let packageJson = "";
+
+  for await (const [name, child] of handle.entries()) {
+    entries.push(name);
+
+    if (name === "package.json" && child.kind === "file" && child.getFile) {
+      try {
+        packageJson = await (await child.getFile()).text();
+      } catch {
+        // 读不到就退化为只用结构相似度
+      }
+    }
+
+    if (entries.length >= FINGERPRINT_LIMIT) break;
+  }
+
+  return {
+    entries,
+    packageHash: packageJson ? await sha256(packageJson) : undefined,
+    packageName: packageJson ? safeParseName(packageJson) : undefined,
+  };
+}
+
+async function sha256(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function safeParseName(json: string): string | undefined {
+  try {
+    const parsed = JSON.parse(json) as { name?: string };
+    return typeof parsed.name === "string" ? parsed.name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const SEVERITY_LABELS: Record<Finding["severity"], string> = {
   error: "高",
   warning: "中",
@@ -60,7 +137,108 @@ function App() {
   const [events, setEvents] = useState<ProgressEvent[]>(demoEvents);
   const [loading, setLoading] = useState(false);
   const [isDemo, setIsDemo] = useState(true);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [matches, setMatches] = useState<LocateMatch[]>([]);
+  const [locating, setLocating] = useState(false);
+  const [history, setHistory] = useState<RunSummary[]>([]);
   const [notice, setNotice] = useState("当前展示 Demo 数据，可连接本地 API 分析真实仓库");
+
+  // 路径变化时查一下该仓库是否已有分析记录（含命令行跑出来的）
+  useEffect(() => {
+    let active = true;
+    fetch(`/repo/runs?root=${encodeURIComponent(root)}`)
+      .then((response) => (response.ok ? response.json() : { runs: [] }))
+      .then((data: { runs?: RunSummary[] }) => {
+        if (active) setHistory(data.runs ?? []);
+      })
+      .catch(() => {
+        if (active) setHistory([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [root]);
+
+  /**
+   * 打开系统原生目录选择器，再让后端把目录名反查成绝对路径。
+   *
+   * 浏览器不会给出绝对路径，但后端就在同一台机器上；把目录名与顶层条目
+   * 发过去定位即可。同名目录有多个时展示候选，定位不到就退回服务端浏览器。
+   */
+  const pickDirectory = async () => {
+    const picker = (window as DirectoryPickerWindow).showDirectoryPicker;
+    if (!picker) {
+      setPickerOpen(true);
+      return;
+    }
+
+    let handle: DirectoryHandle;
+    try {
+      handle = await picker({ mode: "read" });
+    } catch {
+      // 用户取消，或浏览器拒绝（非安全上下文），都不需要额外提示
+      return;
+    }
+
+    setMatches([]);
+    setLocating(true);
+    try {
+      const fingerprint = await collectFingerprint(handle);
+
+      const response = await fetch("/fs/locate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: handle.name, ...fingerprint }),
+      });
+      if (!response.ok) throw new Error(`${response.status}`);
+
+      const { matches: found, confident } = (await response.json()) as LocateResponse;
+
+      // 判据足够强就直接采用，不必让用户在一堆同名目录里再挑一次
+      if (found.length > 0 && confident) {
+        setRoot(found[0].path);
+        setNotice(
+          found[0].exact
+            ? `已选择 ${found[0].path}`
+            : `已选择 ${found[0].path}（按目录特征匹配）`,
+        );
+        return;
+      }
+
+      if (found.length > 1) {
+        setMatches(found);
+        setNotice(
+          `本机有 ${found.length} 个同名目录且特征相近，浏览器不提供绝对路径，请确认是哪一个`,
+        );
+        return;
+      }
+
+      setNotice(`未能定位「${handle.name}」的绝对路径，请手动浏览选择`);
+      setPickerOpen(true);
+    } catch (error) {
+      setNotice(`目录定位失败：${describeError(error)}，请手动浏览选择`);
+      setPickerOpen(true);
+    } finally {
+      setLocating(false);
+    }
+  };
+
+  /** 加载该仓库最近一次分析结果——包括 pnpm analyze 在命令行跑出来的 */
+  const loadLatest = async () => {
+    setNotice("正在读取历史分析结果…");
+    try {
+      const response = await fetch(`/repo/runs/latest?root=${encodeURIComponent(root)}`);
+      if (!response.ok) throw new Error(`${response.status}`);
+      const data = (await response.json()) as { report: Report };
+      setIsDemo(false);
+      setReport(data.report);
+      setResults([]);
+      setEvents([]);
+      setNotice(`已加载历史分析结果 · ${new Date(data.report.generatedAt).toLocaleString()}`);
+    } catch (error) {
+      setNotice(`读取历史结果失败：${describeError(error)}`);
+    }
+  };
 
   /**
    * 只在「从未拿到过真实数据」时回退演示数据。
@@ -183,11 +361,49 @@ function App() {
         <section className="control-panel">
           <div className="field">
             <label>仓库路径</label>
-            <input
-              value={root}
-              onChange={(event) => setRoot(event.target.value)}
-              placeholder="/path/to/your-project"
-            />
+            <div className="path-input">
+              <input
+                value={root}
+                onChange={(event) => {
+                  setRoot(event.target.value);
+                  setMatches([]);
+                }}
+                placeholder="/path/to/your-project"
+              />
+              <button
+                type="button"
+                className="browse-button"
+                onClick={pickDirectory}
+                disabled={locating}
+              >
+                {locating ? "定位中…" : "选择目录…"}
+              </button>
+            </div>
+
+            {matches.length > 0 && (
+              <div className="locate-matches">
+                <span className="locate-hint">
+                  按目录特征匹配度排序，请选择你刚才选中的那个：
+                </span>
+                {matches.map((match) => (
+                  <button
+                    key={match.path}
+                    type="button"
+                    className="locate-match"
+                    onClick={() => {
+                      setRoot(match.path);
+                      setMatches([]);
+                      setNotice(`已选择 ${match.path}`);
+                    }}
+                  >
+                    <code>{match.path}</code>
+                    {match.exact && <span className="picker-tag exact">内容一致</span>}
+                    {match.isRepo && <span className="picker-tag repo">package.json</span>}
+                    {match.analyzed && <span className="picker-tag analyzed">已分析</span>}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="field query-field">
             <label>
@@ -204,9 +420,24 @@ function App() {
           </button>
         </section>
 
-        <p className="notice">
-          <span>✦</span> {notice}
+        <p className={`notice ${isDemo ? "demo" : ""}`}>
+          <span>{isDemo ? "⚠" : "✦"}</span>
+          {isDemo && <b className="demo-badge">DEMO 数据</b>}
+          {notice}
         </p>
+
+        {history.length > 0 && (
+          <p className="notice history-notice">
+            <span>◷</span>
+            该仓库有 {history.length} 次历史分析记录，最近一次{" "}
+            {new Date(history[0].generatedAt).toLocaleString()}
+            {history[0].score !== null && ` · 评分 ${history[0].score}`}
+            {` · ${history[0].files} 个文件`}
+            <button type="button" className="link-button" onClick={loadLatest}>
+              加载最近一次结果
+            </button>
+          </p>
+        )}
 
         <section className="content-grid">
           <div className="main-column">
@@ -318,7 +549,143 @@ function App() {
         <span>Repo Surgeon / Frontend Analysis Agent</span>
         <span>Deterministic facts · Explainable results</span>
       </footer>
+
+      {pickerOpen && (
+        <DirectoryPicker
+          initialPath={root}
+          onCancel={() => setPickerOpen(false)}
+          onSelect={(selected) => {
+            setRoot(selected);
+            setPickerOpen(false);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * 目录选择器。
+ *
+ * 浏览器拿不到本地目录的绝对路径（`webkitdirectory` 只给相对路径，
+ * File System Access API 只给句柄），而后端需要的恰恰是绝对路径，
+ * 所以目录树由本地 API 提供，这里只负责导航与选择。
+ */
+function DirectoryPicker({
+  initialPath,
+  onSelect,
+  onCancel,
+}: {
+  initialPath: string;
+  onSelect: (path: string) => void;
+  onCancel: () => void;
+}) {
+  const [listing, setListing] = useState<BrowseResponse | undefined>();
+  const [roots, setRoots] = useState<RootsResponse["roots"]>([]);
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(true);
+
+  const browse = async (target?: string) => {
+    setPending(true);
+    setError("");
+    try {
+      const url = target ? `/fs/browse?path=${encodeURIComponent(target)}` : "/fs/browse";
+      const response = await fetch(url);
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(detail.error ?? `${response.status}`);
+      }
+      setListing((await response.json()) as BrowseResponse);
+    } catch (caught) {
+      setError(describeError(caught));
+    } finally {
+      setPending(false);
+    }
+  };
+
+  useEffect(() => {
+    void browse(initialPath);
+    fetch("/fs/roots")
+      .then((response) => (response.ok ? response.json() : { roots: [] }))
+      .then((data: RootsResponse) => setRoots(data.roots ?? []))
+      .catch(() => setRoots([]));
+    // 只在打开时初始化一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="picker-backdrop" onClick={onCancel}>
+      <div className="picker" onClick={(event) => event.stopPropagation()}>
+        <header className="picker-header">
+          <h3>选择仓库目录</h3>
+          <button type="button" className="picker-close" onClick={onCancel}>
+            ✕
+          </button>
+        </header>
+
+        <div className="picker-shortcuts">
+          {roots.map((item) => (
+            <button key={item.path} type="button" onClick={() => void browse(item.path)}>
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="picker-path">
+          <button
+            type="button"
+            className="picker-up"
+            disabled={!listing?.parent}
+            onClick={() => listing?.parent && void browse(listing.parent)}
+          >
+            ↑ 上级
+          </button>
+          <code>{listing?.path ?? "…"}</code>
+        </div>
+
+        <div className="picker-list">
+          {error && <div className="picker-error">{error}</div>}
+          {pending && !error && <Empty text="读取中…" />}
+          {!pending && !error && listing?.entries.length === 0 && <Empty text="该目录下没有子目录" />}
+          {!pending &&
+            !error &&
+            listing?.entries.map((entry) => (
+              <DirectoryRow key={entry.path} entry={entry} onOpen={() => void browse(entry.path)} />
+            ))}
+        </div>
+
+        <footer className="picker-footer">
+          <div className="picker-hint">
+            {listing?.isRepo ? "当前目录含 package.json" : "当前目录没有 package.json"}
+            {listing?.analyzed && " · 已有分析记录"}
+          </div>
+          <div className="picker-actions">
+            <button type="button" onClick={onCancel}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              disabled={!listing}
+              onClick={() => listing && onSelect(listing.path)}
+            >
+              选择此目录
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function DirectoryRow({ entry, onOpen }: { entry: DirectoryEntry; onOpen: () => void }) {
+  return (
+    <button type="button" className="picker-row" onClick={onOpen}>
+      <span className="picker-icon">{entry.isRepo ? "◆" : "▸"}</span>
+      <span className="picker-name">{entry.name}</span>
+      {entry.isRepo && <span className="picker-tag repo">package.json</span>}
+      {entry.analyzed && <span className="picker-tag analyzed">已分析</span>}
+    </button>
   );
 }
 
@@ -606,19 +973,47 @@ function Empty({ text }: { text: string }) {
 
 function MermaidChart({ source }: { source: string }) {
   const [svg, setSvg] = useState("");
+  const [error, setError] = useState("");
+  const id = useId().replace(/:/g, "");
 
   useEffect(() => {
     let active = true;
+    setError("");
+
+    if (!source.trim() || source.trim() === "graph TD") {
+      setSvg("");
+      setError("本次分析没有产出架构图");
+      return;
+    }
+
     mermaid
-      .render(`architecture-${Date.now()}`, source)
+      .render(`architecture-${id}`, source)
       .then((result) => {
         if (active) setSvg(result.svg);
       })
-      .catch(() => setSvg("<p>Mermaid 图解析失败</p>"));
+      .catch((caught) => {
+        if (!active) return;
+        setSvg("");
+        // 渲染失败时把原因和源码一起给出来，否则无从排查
+        setError(describeError(caught));
+      });
+
     return () => {
       active = false;
     };
-  }, [source]);
+  }, [source, id]);
+
+  if (error) {
+    return (
+      <div className="mermaid-fallback">
+        <p>架构图渲染失败：{error}</p>
+        <details>
+          <summary>查看图源码</summary>
+          <pre>{source}</pre>
+        </details>
+      </div>
+    );
+  }
 
   return <div className="mermaid-canvas" dangerouslySetInnerHTML={{ __html: svg }} />;
 }

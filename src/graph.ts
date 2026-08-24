@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
+import type { parse as ParseSfc } from "@vue/compiler-sfc";
 import {
   Node,
   Project,
@@ -8,6 +10,7 @@ import {
   type ClassDeclaration,
   type SourceFile,
 } from "ts-morph";
+import { loadBuildConfigAliases, matchAlias, type AliasEntry } from "./alias.js";
 import type { FileNode, RelationEdge, SymbolNode } from "./model.js";
 
 /**
@@ -17,10 +20,10 @@ import type { FileNode, RelationEdge, SymbolNode } from "./model.js";
  * - 走 TypeScript 模块解析，支持 tsconfig paths alias、baseUrl 与 index 解析
  * - 识别动态 import() 与 re-export 产生的依赖边
  * - 识别箭头函数组件、memo / forwardRef 包裹的组件、React 类组件
- * - 提取 JSX render 关系边
+ * - 提取 JSX / Vue template 的 render 关系边
+ * - .vue 经 @vue/compiler-sfc 抽出 script 块后同样走 AST 路径
  *
  * 已知限制：
- * - .vue 文件仍走正则回退，需要接入 @vue/compiler-sfc
  * - 尚未提取函数调用边与 Hook 使用边
  * - 全量解析，未做基于 contentHash 的增量复用
  */
@@ -35,12 +38,18 @@ export function extractGraph(
 
   const project = createProject(root);
   const compilerOptions = project.getCompilerOptions();
-  const parsed: Array<{ file: FileNode; source: SourceFile }> = [];
+  const parsed: Array<{ file: FileNode; source: SourceFile; template?: string }> = [];
 
   for (const file of files) {
-    // .vue 无法交给 TypeScript 直接解析，走正则回退
-    if (file.language === "vue") continue;
-    const source = project.addSourceFileAtPathIfExists(path.join(root, file.path));
+    const absolute = path.join(root, file.path);
+
+    if (file.language === "vue") {
+      const sfc = loadVueSource(project, absolute, contents.get(file.path) ?? "");
+      if (sfc) parsed.push({ file, source: sfc.source, template: sfc.template });
+      continue;
+    }
+
+    const source = project.addSourceFileAtPathIfExists(absolute);
     if (source) parsed.push({ file, source });
   }
 
@@ -49,13 +58,24 @@ export function extractGraph(
     byPath,
     byLowerPath: new Map(files.map((file) => [file.path.toLowerCase(), file])),
     compilerOptions,
+    aliases: loadBuildConfigAliases(root),
     outsideRepo: new Set(),
+    unresolvedAliases: new Map(),
+    aliasHits: new Map(),
+    aliasMisses: new Map(),
   };
 
-  for (const { file, source } of parsed) {
+  for (const entry of context.aliases) {
+    const target = path.relative(root, entry.replacement) || ".";
+    const exists = fs.existsSync(entry.replacement) ? "" : "（目标目录不存在）";
+    console.log(`[graph] alias ${entry.find} → ${target}  来自 ${entry.source}${exists}`);
+  }
+
+  for (const { file, source, template } of parsed) {
     symbols.push(...extractSymbols(file, source));
+    if (file.language === "vue") symbols.push(vueComponentSymbol(file, source));
     edges.push(...extractDependencyEdges(file, source, context));
-    edges.push(...extractRenderEdges(file, source, context));
+    edges.push(...extractRenderEdges(file, source, context, template));
   }
 
   // 静默丢边会让循环依赖漏检、耦合度虚低，比直接报错更危险，至少要让它可见
@@ -66,8 +86,34 @@ export function extractGraph(
     );
   }
 
+  // alias 读到了不等于用上了：把命中与落空分别报出来，
+  // 否则「配置已识别」和「依赖图真的补全了」之间的差距无从判断
+  for (const entry of context.aliases) {
+    const hits = context.aliasHits.get(entry.find) ?? 0;
+    const misses = context.aliasMisses.get(entry.find) ?? 0;
+    if (hits === 0 && misses === 0) continue;
+
+    const detail = misses > 0 ? `，另有 ${misses} 处命中前缀但目标文件不存在` : "";
+    console.log(`[graph] alias ${entry.find} 解析成功 ${hits} 处${detail}`);
+  }
+
+  if (context.unresolvedAliases.size > 0) {
+    const top = [...context.unresolvedAliases]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([prefix, count]) => `${prefix}… × ${count}`)
+      .join("、");
+    console.warn(
+      `[graph] 有 alias 导入无法解析（${top}）。` +
+        `已尝试 tsconfig 的 paths / baseUrl 与 vite / webpack 配置里的 resolve.alias，` +
+        `若 alias 由插件动态注入或写在被 import 的独立文件里，请在 tsconfig 中补上同样的映射`,
+    );
+  }
+
+  // SFC 解析失败的 .vue 退回正则，至少保住相对路径 import
+  const parsedPaths = new Set(parsed.map((item) => item.file.path));
   for (const file of files) {
-    if (file.language !== "vue") continue;
+    if (file.language !== "vue" || parsedPaths.has(file.path)) continue;
     const content = contents.get(file.path) ?? "";
     symbols.push(...extractVueSymbols(file, content));
     edges.push(...extractVueEdges(file, content, byPath));
@@ -82,8 +128,16 @@ interface ResolveContext {
   /** 大小写不敏感文件系统上，resolvedFileName 的大小写沿用 import 说明符 */
   byLowerPath: Map<string, FileNode>;
   compilerOptions: ts.CompilerOptions;
+  /** 从 vite.config / webpack.config 静态提取的 alias */
+  aliases: AliasEntry[];
   /** 解析成功但落在仓库之外（monorepo 兄弟包、软链外部路径）的模块 */
   outsideRepo: Set<string>;
+  /** 疑似 alias 但解析不了的说明符，用于提示 alias 配置缺失 */
+  unresolvedAliases: Map<string, number>;
+  /** 每条 alias 实际解析成功的次数 */
+  aliasHits: Map<string, number>;
+  /** 命中 alias 但目标文件不存在的次数，通常说明 replacement 提取错了 */
+  aliasMisses: Map<string, number>;
 }
 
 function createProject(root: string): Project {
@@ -110,6 +164,86 @@ function createProject(root: string): Project {
   });
 }
 
+const requireFrom = createRequire(import.meta.url);
+/** undefined 表示还没尝试加载，null 表示加载失败且已经提示过 */
+let sfcParser: typeof ParseSfc | null | undefined;
+
+/**
+ * 按需加载 Vue SFC 编译器。
+ *
+ * 它只在仓库里真的存在 .vue 文件时才有用，因此做成可选依赖：
+ * 缺失时退回正则解析并给出可操作的提示，而不是让整个工具起不来
+ * （只分析 React 项目的人不该被 Vue 编译器卡住）。
+ */
+function getSfcParser(): typeof ParseSfc | null {
+  if (sfcParser !== undefined) return sfcParser;
+
+  try {
+    sfcParser = requireFrom("@vue/compiler-sfc").parse as typeof ParseSfc;
+  } catch {
+    sfcParser = null;
+    console.warn(
+      "[graph] 未找到 @vue/compiler-sfc，.vue 文件退回正则解析" +
+        "（alias 导入与 template 组件引用会缺失）。执行 pnpm install 可启用完整解析",
+    );
+  }
+
+  return sfcParser;
+}
+
+/**
+ * 把 .vue 的 script 块抽成一个虚拟 TS 文件交给 ts-morph。
+ *
+ * 关键在于虚拟路径与真实 .vue 同目录（仅追加 .ts 后缀），
+ * 这样相对路径、tsconfig alias 的解析结果与真实文件完全一致——
+ * Vue 项目大量使用 @/ alias，正则回退会把这些 import 整条丢掉。
+ */
+function loadVueSource(
+  project: Project,
+  absolutePath: string,
+  content: string,
+): { source: SourceFile; template?: string } | undefined {
+  const parse = getSfcParser();
+  if (!parse) return undefined;
+
+  try {
+    const { descriptor, errors } = parse(content, { filename: absolutePath });
+    if (errors.length > 0 && !descriptor.script && !descriptor.scriptSetup) return undefined;
+
+    // script setup 与普通 script 可以并存，都要纳入
+    const script = [descriptor.script?.content ?? "", descriptor.scriptSetup?.content ?? ""]
+      .filter(Boolean)
+      .join("\n");
+
+    const source = project.createSourceFile(`${absolutePath}.ts`, script, { overwrite: true });
+    return { source, template: descriptor.template?.content };
+  } catch {
+    return undefined;
+  }
+}
+
+/** .vue 文件本身就是一个组件，用文件名作为组件名 */
+function vueComponentSymbol(file: FileNode, source: SourceFile): SymbolNode {
+  const name = toPascalCase(path.basename(file.path, ".vue"));
+  return {
+    id: `${file.id}:${name}`,
+    fileId: file.id,
+    name,
+    kind: "component",
+    exported: true,
+    startLine: 1,
+    endLine: source.getEndLineNumber(),
+  };
+}
+
+function toPascalCase(value: string): string {
+  return value
+    .split(/[-_.\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
+}
+
 function findTsConfig(root: string): string | undefined {
   for (const name of ["tsconfig.json", "jsconfig.json"]) {
     const candidate = path.join(root, name);
@@ -134,21 +268,90 @@ function resolveModule(
     ts.sys,
   );
   const resolvedFileName = resolved.resolvedModule?.resolvedFileName;
-  if (!resolvedFileName) return undefined;
+  if (!resolvedFileName) {
+    // TypeScript 不认识 .vue 这类扩展名，模块解析会直接失败，
+    // 但 Vue 项目里 `import X from "@/components/X.vue"` 恰恰是最常见的写法
+    return resolveByHand(specifier, fromFilePath, context);
+  }
+
+  const found = lookupByAbsolute(resolvedFileName, context);
+  if (found) return found;
 
   const relative = path.relative(context.root, resolvedFileName).split(path.sep).join("/");
-
-  const exact = context.byPath.get(relative);
-  if (exact) return exact;
-
-  // import "./Utils/x" 在大小写不敏感的文件系统上能解析成功，
-  // 但 resolvedFileName 会沿用说明符里的大小写，与扫描到的真实路径对不上
-  const insensitive = context.byLowerPath.get(relative.toLowerCase());
-  if (insensitive) return insensitive;
-
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     context.outsideRepo.add(relative);
   }
+  return undefined;
+}
+
+/** 看起来是项目内 alias 而不是 npm 包 */
+const ALIAS_LIKE = /^(@\/|~\/|~[^/]|#\/|src\/)/;
+
+/** 手工解析：相对路径 + tsconfig paths alias，用于 TS 解析不了的扩展名 */
+function resolveByHand(
+  specifier: string,
+  fromFilePath: string,
+  context: ResolveContext,
+): FileNode | undefined {
+  if (specifier.startsWith(".")) {
+    return lookupByAbsolute(path.resolve(path.dirname(fromFilePath), specifier), context);
+  }
+
+  // 构建工具配置里的 alias
+  for (const entry of context.aliases) {
+    const mapped = matchAlias(specifier, entry);
+    if (!mapped) continue;
+
+    const found = lookupByAbsolute(mapped, context);
+    if (found) {
+      context.aliasHits.set(entry.find, (context.aliasHits.get(entry.find) ?? 0) + 1);
+      return found;
+    }
+    // 命中了 alias 却找不到文件，通常是 replacement 指错了目录
+    context.aliasMisses.set(entry.find, (context.aliasMisses.get(entry.find) ?? 0) + 1);
+  }
+
+  const paths = context.compilerOptions.paths ?? {};
+  const baseUrl = context.compilerOptions.baseUrl ?? context.root;
+
+  for (const [pattern, targets] of Object.entries(paths)) {
+    const wildcard = pattern.endsWith("*");
+    const prefix = wildcard ? pattern.slice(0, -1) : pattern;
+    if (wildcard ? !specifier.startsWith(prefix) : specifier !== pattern) continue;
+
+    const rest = wildcard ? specifier.slice(prefix.length) : "";
+    for (const target of targets) {
+      const mapped = path.resolve(baseUrl, target.endsWith("*") ? target.slice(0, -1) + rest : target);
+      const found = lookupByAbsolute(mapped, context);
+      if (found) return found;
+    }
+  }
+
+  if (ALIAS_LIKE.test(specifier)) {
+    const key = specifier.split("/").slice(0, 2).join("/");
+    context.unresolvedAliases.set(key, (context.unresolvedAliases.get(key) ?? 0) + 1);
+  }
+
+  return undefined;
+}
+
+/** 把绝对路径映射回扫描到的文件，补全扩展名与 index 文件 */
+function lookupByAbsolute(absolute: string, context: ResolveContext): FileNode | undefined {
+  const relative = path.relative(context.root, absolute).split(path.sep).join("/");
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
+
+  const candidates = [
+    relative,
+    ...MODULE_EXTENSIONS.map((extension) => `${relative}${extension}`),
+    ...INDEX_FILES.map((name) => `${relative}/${name}`),
+  ];
+
+  for (const candidate of candidates) {
+    // 大小写不敏感的文件系统上，说明符里的大小写未必与真实路径一致
+    const hit = context.byPath.get(candidate) ?? context.byLowerPath.get(candidate.toLowerCase());
+    if (hit) return hit;
+  }
+
   return undefined;
 }
 
@@ -281,25 +484,30 @@ function extractRenderEdges(
   file: FileNode,
   source: SourceFile,
   context: ResolveContext,
+  template?: string,
 ): RelationEdge[] {
   const importedFrom = collectImportedNames(source, context);
   if (!importedFrom.size) return [];
 
+  const usages = template
+    ? extractTemplateTags(template)
+    : source
+        .getDescendantsOfKind(SyntaxKind.JsxOpeningElement)
+        .concat(source.getDescendantsOfKind(SyntaxKind.JsxSelfClosingElement) as never[])
+        .map((element) => ({
+          name: element.getTagNameNode().getText(),
+          line: element.getStartLineNumber(),
+        }));
+
   const edges: RelationEdge[] = [];
   const seen = new Set<string>();
 
-  const elements = [
-    ...source.getDescendantsOfKind(SyntaxKind.JsxOpeningElement),
-    ...source.getDescendantsOfKind(SyntaxKind.JsxSelfClosingElement),
-  ];
-
-  for (const element of elements) {
-    const tagName = element.getTagNameNode().getText();
+  for (const usage of usages) {
     // <Foo.Bar /> 取命名空间根部
-    const rootName = tagName.split(".")[0];
-    if (!/^[A-Z]/.test(rootName)) continue;
-
-    const target = importedFrom.get(rootName);
+    const rootName = usage.name.split(".")[0];
+    // Vue 模板里 <my-comp /> 对应 import 进来的 MyComp
+    const target =
+      importedFrom.get(rootName) ?? importedFrom.get(toPascalCase(rootName)) ?? undefined;
     if (!target || target.id === file.id || seen.has(target.id)) continue;
 
     seen.add(target.id);
@@ -307,11 +515,25 @@ function extractRenderEdges(
       from: file.id,
       to: target.id,
       kind: "render",
-      location: { file: file.path, line: element.getStartLineNumber() },
+      location: { file: file.path, line: usage.line },
     });
   }
 
   return edges;
+}
+
+/** 从 Vue template 里取出用到的标签名与行号 */
+function extractTemplateTags(template: string): Array<{ name: string; line: number }> {
+  const tags: Array<{ name: string; line: number }> = [];
+
+  for (const match of template.matchAll(/<([A-Za-z][\w.-]*)/g)) {
+    const name = match[1];
+    // 原生 HTML 标签一律小写且不含连字符，组件至少满足其一
+    if (!/[A-Z]/.test(name) && !name.includes("-")) continue;
+    tags.push({ name, line: lineOf(template, match.index) });
+  }
+
+  return tags;
 }
 
 /** 建立「本地标识符 → 来源文件」映射，覆盖默认导入、具名导入（含 as 重命名）与命名空间导入 */
