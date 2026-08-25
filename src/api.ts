@@ -9,9 +9,13 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import type { AnalysisResult } from "./model.js";
 import type { QueryPlan, RetrievalResult } from "./retrieval.js";
+import { loadEnv } from "./env.js";
 import { locateDirectories, type Fingerprint } from "./locate.js";
 import { readLatestRun, readRunSummaries } from "./storage.js";
 import { runAnalysis, type ProgressEvent } from "./workflow.js";
+
+// 必须在读取任何配置之前加载
+loadEnv();
 
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://127.0.0.1:5173";
 /**

@@ -1,0 +1,15 @@
+{
+  "title": "开启 emitDecoratorMetadata 但未使用装饰器时仍可改造",
+  "status": "expected-pass",
+  "why": "两个问题的回归。其一：大量 Vue / React 项目从脚手架继承了 experimentalDecorators + emitDecoratorMetadata 却从不使用装饰器，早期实现把它当全局阻断器，导致一个 319 文件的真实仓库里 26 条边全部判为不可拆、可改造数为 0——功能等于失效；风险只存在于真正出现装饰器的文件。其二：types.ts 用 ReturnType<typeof fetchRank> 引用 apis.ts，这是类型位置，但 findReferencesAsNodes 会连符号的定义处一起返回，定义节点是 FunctionDeclaration（语句），被误判成值引用。判定只应统计发起 import 的那个文件内部的使用。",
+  "expect": {
+    "cycles": [["src/apis.ts", "src/types.ts"]],
+    "refactor": {
+      "candidates": [
+        { "file": "src/types.ts", "target": "src/apis.ts" },
+        { "file": "src/apis.ts", "target": "src/types.ts" }
+      ],
+      "cyclesAfter": 0
+    }
+  }
+}

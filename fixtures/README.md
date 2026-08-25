@@ -25,9 +25,11 @@ fixtures/<序号>-<用例名>/
 | `why` | 为什么现在做不到——写清楚失败的根因，而不是笼统的「未实现」 |
 | `requires` | 该用例依赖的可选包；缺失时标记为 `SKIPPED` 而不是判为回归 |
 | `expect.cycles` | 期望检出的循环依赖，每项是构成环的文件路径集合（比较时忽略顺序） |
+| `expect.cycleCount` | 环的**总数**。用来断言「不该有环」——只写 `cycles: []` 等于零条断言 |
 | `expect.components` | 期望被识别为 `component` 的符号名 |
 | `expect.edges` | 期望存在的关系边 `{ from, to, kind }` |
 | `expect.metrics` | 维护性指标：`score` 总分、`dimensionCount` 参与评分的维度数 |
+| `expect.refactor` | 改造计划：`candidates` 可拆边（数量必须精确匹配）、`blocked` 不可拆边及原因、`cyclesAfter` 改造后剩余环数 |
 | `expect.architecture` | 架构聚合：`sourceRoot` 剥离出的公共前缀、`modules` 必须聚出的模块、`minMermaidLines` 图的最小行数 |
 | `expect.narration` | 送给 LLM 前的上下文摘要：`maxEstimatedTokens` 规模上限、`modules` 必须保留的模块聚合、`cycleCuts` 环上建议切点 |
 
@@ -59,6 +61,25 @@ fixtures/<序号>-<用例名>/
 | `10-vue-sfc` | expected-pass | Vue SFC 的 alias 导入与 template 组件引用 |
 | `11-vite-alias` | expected-pass | `vite.config` 里 `resolve.alias` 的静态提取 |
 | `12-alias-shorthand` | expected-pass | alias 声明为变量并以简写属性写入 `resolve` |
+| `13-type-only-cycle` | expected-pass | 纯类型环可用 `import type` 打破 |
+| `14-runtime-cycle` | expected-pass | 运行时环不可自动修复（保护误报率） |
+| `15-decorator-metadata-unused` | expected-pass | 开了 `emitDecoratorMetadata` 但不用装饰器时仍可改造 |
+| `16-type-only-edge` | expected-pass | 已写成 `import type` 的边不构成运行时环 |
+| `17-verbatim-inline-type` | expected-pass | `verbatimModuleSyntax` 下内联 `type` 修饰符仍是运行时边 |
+
+## 改造闭环的端到端用例
+
+`pnpm eval` 校验的是**判定**，`pnpm test`（[tests/apply.test.ts](../tests/apply.test.ts)）校验的是**执行**——两件事不能混为一谈：返回值说「已应用」而磁盘没变，是最坏的一种绿灯。
+
+每个用例都从 fixture 复制出一个真实的、已提交的 git 仓库，跑完再读回文件内容对账：
+
+| 用例 | 断言的行为 |
+|---|---|
+| 纯类型环 | 磁盘上真的出现 `import type`，函数体原样保留，重跑分析环归零，diff 与报告落盘 |
+| 模拟与实测对不上 | 注入两条源码里不存在的边制造预测偏差 → 必须还原到改动前，但 diff 要留档 |
+| 运行时环 | 没有可拆的边，一个字节都不写，`git status` 保持干净 |
+| 目标文件有未提交改动 | 拒绝执行，用户的改动原封不动 |
+| 目标文件不受 git 跟踪 | 拒绝执行——没有可靠回滚手段就不动用户的代码 |
 
 ## 解析器替换前后
 

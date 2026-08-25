@@ -1,12 +1,26 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { Command } from "commander";
+import { analyzeCycles } from "./analyzers.js";
+import { applyTypeOnlyRefactor, formatApplyResult } from "./apply.js";
+import { loadEnv } from "./env.js";
+import { extractGraph } from "./graph.js";
+import { formatPlan, planTypeOnlyRefactor } from "./refactor.js";
+import { scanFiles } from "./scanner.js";
 import { runAnalysis, type ProgressEvent, type WorkflowState } from "./workflow.js";
 
 interface AnalyzeOptions {
   json?: boolean;
   query?: string;
 }
+
+interface RefactorOptions {
+  dryRun?: boolean;
+  apply?: boolean;
+}
+
+// 必须在读取任何配置之前加载
+loadEnv();
 
 const program = new Command()
   .name("reposurgeon")
@@ -75,6 +89,54 @@ function formatSummary(workflow: WorkflowState): string {
     `  在 Web 看板里填入 ${workflow.root} 可直接加载这次结果`,
   ].join("\n");
 }
+
+program
+  .command("refactor")
+  .argument("<directory>", "本地仓库目录")
+  .option("--dry-run", "只输出改造计划，不写入任何文件（默认）")
+  .option("--apply", "写入改动，并用类型检查与环数对账验证；验证失败自动回滚")
+  .action(async (directory: string, options: RefactorOptions) => {
+    const root = path.resolve(directory);
+    const { files, contents } = await scanFiles(root);
+
+    if (files.length === 0) {
+      throw new Error(`在 ${root} 下没有找到可分析的源码文件`);
+    }
+    console.log(`  ✓ 扫描 ${files.length} 个文件`);
+
+    const { edges } = extractGraph(root, files, contents);
+    const cycles = analyzeCycles(files, edges);
+    console.log(`  ✓ 检测到 ${cycles.length} 处循环依赖\n`);
+
+    if (cycles.length === 0) {
+      console.log("没有循环依赖，无需改造");
+      return;
+    }
+
+    if (!options.apply) {
+      const plan = planTypeOnlyRefactor({ root, files, contents, edges, cycles });
+      console.log(formatPlan(plan));
+      console.log("\n确认无误后加 --apply 写入（会先做类型检查与环数对账，不通过自动回滚）");
+      return;
+    }
+
+    const result = await applyTypeOnlyRefactor({
+      root,
+      files,
+      contents,
+      edges,
+      cycles,
+      onStep: (message) => console.log(`  · ${message}`),
+    });
+
+    console.log(`\n${formatPlan(result.plan, { dryRun: false })}\n`);
+    console.log(formatApplyResult(result));
+
+    // 回滚与放弃都不是崩溃，但不该被 CI 当成成功
+    if (result.status === "rolled-back" || result.status === "aborted") {
+      process.exitCode = 1;
+    }
+  });
 
 program.parseAsync().catch((error) => {
   console.error(formatFatal(error));

@@ -18,6 +18,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyzeCycles, analyzeFrontend, calculateMetrics } from "../src/analyzers.js";
+import { planTypeOnlyRefactor } from "../src/refactor.js";
 import { analyzeArchitecture } from "../src/architecture.js";
 import { extractGraph } from "../src/graph.js";
 import { buildNarrationContext, estimateContextTokens } from "../src/narrate.js";
@@ -51,8 +52,15 @@ interface Expectation {
   expect: {
     cycles?: string[][];
     components?: string[];
+    /** 环的**总数**。用于断言「不该有环」——只列 cycles 的话，空数组等于零条断言 */
+    cycleCount?: number;
     edges?: Array<{ from: string; to: string; kind: string }>;
     metrics?: { score?: number; dimensionCount?: number };
+    refactor?: {
+      candidates?: Array<{ file: string; target: string }>;
+      blocked?: Array<{ file: string; reasonContains: string }>;
+      cyclesAfter?: number;
+    };
     architecture?: {
       sourceRoot?: string;
       modules?: string[];
@@ -104,6 +112,13 @@ async function evaluateFixture(dir: string): Promise<FixtureResult> {
 
   const checks: Check[] = [];
 
+  if (expectation.expect.cycleCount !== undefined) {
+    checks.push({
+      label: `环数 ${cycles.length} = ${expectation.expect.cycleCount}`,
+      ok: cycles.length === expectation.expect.cycleCount,
+    });
+  }
+
   for (const expected of expectation.expect.cycles ?? []) {
     const fingerprint = fingerprintOf(expected);
     checks.push({
@@ -153,6 +168,41 @@ async function evaluateFixture(dir: string): Promise<FixtureResult> {
     }
   }
 
+  if (expectation.expect.refactor) {
+    const expected = expectation.expect.refactor;
+    const plan = planTypeOnlyRefactor({ root: dir, files, contents, edges, cycles });
+    const candidates = plan.cycles.flatMap((cycle) => cycle.candidates);
+    const blocked = plan.cycles.flatMap((cycle) => cycle.blocked);
+
+    // 候选数量必须精确匹配：多报一条就是潜在的误改
+    if (expected.candidates) {
+      checks.push({
+        label: `可拆边数量 ${candidates.length} = ${expected.candidates.length}`,
+        ok: candidates.length === expected.candidates.length,
+      });
+      for (const item of expected.candidates) {
+        checks.push({
+          label: `可拆 ${item.file} → ${item.target}`,
+          ok: candidates.some((c) => c.file === item.file && c.target === item.target),
+        });
+      }
+    }
+
+    for (const item of expected.blocked ?? []) {
+      checks.push({
+        label: `不可拆 ${item.file}（${item.reasonContains}）`,
+        ok: blocked.some((b) => b.file === item.file && b.reason.includes(item.reasonContains)),
+      });
+    }
+
+    if (expected.cyclesAfter !== undefined) {
+      checks.push({
+        label: `改造后剩余环 ${plan.cyclesAfter} = ${expected.cyclesAfter}`,
+        ok: plan.cyclesAfter === expected.cyclesAfter,
+      });
+    }
+  }
+
   if (expectation.expect.architecture) {
     const expected = expectation.expect.architecture;
     const architecture = analyzeArchitecture(files, symbols, edges);
@@ -179,7 +229,15 @@ async function evaluateFixture(dir: string): Promise<FixtureResult> {
   }
 
   if (expectation.expect.narration) {
-    checks.push(...(await checkNarration(dir, expectation.expect.narration, { files, contents, symbols, edges, cycles })));
+    checks.push(
+      ...(await checkNarration(dir, expectation.expect.narration, {
+        files,
+        contents,
+        symbols,
+        edges,
+        cycles,
+      })),
+    );
   }
 
   const passed = checks.length > 0 && checks.every((check) => check.ok);
@@ -189,7 +247,12 @@ async function evaluateFixture(dir: string): Promise<FixtureResult> {
     expectation,
     checks,
     outcome: resolveOutcome(expectation.status, passed),
-    stats: { files: files.length, symbols: symbols.length, edges: edges.length, cycles: cycles.length },
+    stats: {
+      files: files.length,
+      symbols: symbols.length,
+      edges: edges.length,
+      cycles: cycles.length,
+    },
   };
 }
 
@@ -277,7 +340,9 @@ function printResult(result: FixtureResult): void {
   );
 
   if (result.outcome === "SKIPPED") {
-    console.log(`                  缺少可选依赖：${result.missing?.join("、")}（执行 pnpm install 后可运行）`);
+    console.log(
+      `                  缺少可选依赖：${result.missing?.join("、")}（执行 pnpm install 后可运行）`,
+    );
     console.log("");
     return;
   }

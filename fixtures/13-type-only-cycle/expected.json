@@ -1,0 +1,15 @@
+{
+  "title": "纯类型引用构成的环可用 import type 打破",
+  "status": "expected-pass",
+  "why": "Order 与 Cart 互相引用，但两侧都只用于 interface 字段标注与参数类型，没有任何值位置引用。改成 import type 后运行时依赖消失，环随之消失——这是语义等价的机械变换，不需要模型生成任何代码。",
+  "expect": {
+    "cycles": [["src/cart.ts", "src/order.ts"]],
+    "refactor": {
+      "candidates": [
+        { "file": "src/order.ts", "target": "src/cart.ts" },
+        { "file": "src/cart.ts", "target": "src/order.ts" }
+      ],
+      "cyclesAfter": 0
+    }
+  }
+}

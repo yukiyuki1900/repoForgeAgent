@@ -519,3 +519,51 @@
   color: #1f7a55;
   font-weight: 600;
 }
+
+/* ── 布局调整 ───────────────────────────────── */
+
+/*
+ * 仓库路径与分析问题改为上下排列。
+ * 横排时两个输入框都被压得很窄，而路径动辄七八十个字符，
+ * 光标一移就看不到开头。
+ */
+.control-panel {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+}
+
+.control-panel .field,
+.control-panel .query-field {
+  flex: none;
+}
+
+.control-panel .primary-button {
+  align-self: flex-end;
+  min-width: 168px;
+}
+
+/* 执行进度是整轮运行的主线，独占一行而不是挤在两列网格的左列 */
+.progress-section {
+  margin-bottom: 18px;
+}
+
+/*
+ * .panel 自身不带内边距，各内容区自行补齐。
+ * 时间线与架构解读此前漏了，内容直接贴着边框。
+ */
+.timeline {
+  padding: 0 21px 17px;
+}
+
+.timeline-row {
+  padding: 10px 0;
+}
+
+.narration {
+  padding: 0 21px 21px;
+}
+
+.mermaid-fallback {
+  margin: 0 21px 21px;
+}

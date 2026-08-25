@@ -1,0 +1,18 @@
+{
+  "title": "verbatimModuleSyntax 下内联 type 修饰符仍是运行时边",
+  "status": "expected-pass",
+  "why": "`import { type A } from \"m\"` 默认会被整条擦除，但开启 verbatimModuleSyntax 后编译产物是 `import {} from \"m\"`——副作用导入仍在，运行时依赖成立，环也仍然存在。把内联写法与声明级 import type 混为一谈，会在这类项目上漏报环，并且改造时可能生成非法的 `import type { type A }`。",
+  "expect": {
+    "cycleCount": 1,
+    "cycles": [["src/config.ts", "src/service.ts"]],
+    "edges": [
+      { "from": "src/config.ts", "to": "src/service.ts", "kind": "import" },
+      { "from": "src/service.ts", "to": "src/config.ts", "kind": "import" }
+    ],
+    "refactor": {
+      "candidates": [],
+      "blocked": [{ "file": "src/config.ts", "reasonContains": "内联 type" }],
+      "cyclesAfter": 1
+    }
+  }
+}

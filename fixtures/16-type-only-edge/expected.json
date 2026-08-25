@@ -1,0 +1,12 @@
+{
+  "title": "已写成 import type 的边不构成运行时环",
+  "status": "expected-pass",
+  "why": "config 用值的方式引用 service，service 只用 import type 引用 config。后者在编译期被整条擦除，运行时不存在这条依赖，因此两者不构成循环。此前实现把所有 import 声明一律记为 import 边，会虚报出一个运行时根本不存在的环——这是 --apply 的结构验证抓出来的：模拟说改完 0 个环，实测却还是 1 个。",
+  "expect": {
+    "cycleCount": 0,
+    "edges": [
+      { "from": "src/config.ts", "to": "src/service.ts", "kind": "import" },
+      { "from": "src/service.ts", "to": "src/config.ts", "kind": "type-reference" }
+    ]
+  }
+}

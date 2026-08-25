@@ -1,0 +1,16 @@
+{
+  "title": "运行时引用构成的环不可自动修复",
+  "status": "expected-pass",
+  "why": "两个模块互相调用对方的函数，是真实的运行时依赖。误判成可修复会直接改坏代码——改成 import type 后运行时拿不到实现。判定必须从严：只要有一处引用落在值位置就不改。这条用例保护的是误报率，比检出率更重要。",
+  "expect": {
+    "cycles": [["src/cart.ts", "src/order.ts"]],
+    "refactor": {
+      "candidates": [],
+      "blocked": [
+        { "file": "src/order.ts", "reasonContains": "作为值使用" },
+        { "file": "src/cart.ts", "reasonContains": "作为值使用" }
+      ],
+      "cyclesAfter": 1
+    }
+  }
+}

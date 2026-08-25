@@ -12,13 +12,15 @@
     "dev": "node scripts/dev.mjs",
     "stop": "node scripts/stop.mjs",
     "analyze": "tsx src/cli.ts analyze",
+    "refactor": "tsx src/cli.ts refactor",
+    "refactor:apply": "tsx src/cli.ts refactor --apply",
     "api": "tsx src/api.ts",
     "web:dev": "pnpm --dir web dev",
     "web:build": "pnpm --dir web build",
     "eval": "tsx scripts/eval.ts",
-    "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\" \"web/src/**/*.{ts,tsx}\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\" \"web/src/**/*.{ts,tsx}\"",
-    "test": "node --test"
+    "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\" \"web/src/**/*.{ts,tsx}\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\" \"web/src/**/*.{ts,tsx}\"",
+    "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.0.8",

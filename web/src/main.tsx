@@ -131,7 +131,7 @@ const DIMENSION_LABELS: Record<string, string> = {
 
 function App() {
   const [root, setRoot] = useState("/workspace/demo-shop");
-  const [query, setQuery] = useState("找所有处理用户登录的组件");
+  const [query, setQuery] = useState("");
   const [report, setReport] = useState<Report | undefined>(demoReport);
   const [results, setResults] = useState<RetrievalResult[]>(demoRetrieval);
   const [events, setEvents] = useState<ProgressEvent[]>(demoEvents);
@@ -412,7 +412,7 @@ function App() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="例如：找所有处理用户登录的组件"
+              placeholder="找所有处理用户登录的组件"
             />
           </div>
           <button className="primary-button" onClick={startAnalysis} disabled={loading}>
@@ -439,12 +439,10 @@ function App() {
           </p>
         )}
 
-        <section className="content-grid">
-          <div className="main-column">
-            <Panel title="执行进度" subtitle="LangGraph 节点级事件流" action={progressLabel(events)}>
-              <ProgressTimeline events={events} running={loading} />
-            </Panel>
-          </div>
+        <section className="progress-section">
+          <Panel title="执行进度" subtitle="LangGraph 节点级事件流" action={progressLabel(events)}>
+            <ProgressTimeline events={events} running={loading} />
+          </Panel>
         </section>
 
         {!report && (
@@ -500,7 +498,7 @@ function App() {
             </Panel>
             <Panel
               title="语义检索结果"
-              subtitle={`Query · ${query}`}
+              subtitle={query ? `Query · ${query}` : "未提供检索问题"}
               action={`${results.length} 个结果`}
             >
               <div className="result-list">

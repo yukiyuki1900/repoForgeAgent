@@ -8,10 +8,11 @@ import {
   SyntaxKind,
   ts,
   type ClassDeclaration,
+  type ImportDeclaration,
   type SourceFile,
 } from "ts-morph";
 import { loadBuildConfigAliases, matchAlias, type AliasEntry } from "./alias.js";
-import type { FileNode, RelationEdge, SymbolNode } from "./model.js";
+import type { FileNode, RelationEdge, RelationKind, SymbolNode } from "./model.js";
 
 /**
  * 基于 TypeScript AST 提取符号与关系边。
@@ -27,58 +28,14 @@ import type { FileNode, RelationEdge, SymbolNode } from "./model.js";
  * - 尚未提取函数调用边与 Hook 使用边
  * - 全量解析，未做基于 contentHash 的增量复用
  */
-export function extractGraph(
-  root: string,
-  files: FileNode[],
-  contents: Map<string, string>,
-): { symbols: SymbolNode[]; edges: RelationEdge[] } {
-  const byPath = new Map(files.map((file) => [file.path, file]));
-  const symbols: SymbolNode[] = [];
-  const edges: RelationEdge[] = [];
-
-  const project = createProject(root);
-  const compilerOptions = project.getCompilerOptions();
-  const parsed: Array<{ file: FileNode; source: SourceFile; template?: string }> = [];
-
-  for (const file of files) {
-    const absolute = path.join(root, file.path);
-
-    if (file.language === "vue") {
-      const sfc = loadVueSource(project, absolute, contents.get(file.path) ?? "");
-      if (sfc) parsed.push({ file, source: sfc.source, template: sfc.template });
-      continue;
-    }
-
-    const source = project.addSourceFileAtPathIfExists(absolute);
-    if (source) parsed.push({ file, source });
-  }
-
-  const context: ResolveContext = {
-    root,
-    byPath,
-    byLowerPath: new Map(files.map((file) => [file.path.toLowerCase(), file])),
-    compilerOptions,
-    aliases: loadBuildConfigAliases(root),
-    outsideRepo: new Set(),
-    unresolvedAliases: new Map(),
-    aliasHits: new Map(),
-    aliasMisses: new Map(),
-  };
-
-  for (const entry of context.aliases) {
-    const target = path.relative(root, entry.replacement) || ".";
-    const exists = fs.existsSync(entry.replacement) ? "" : "（目标目录不存在）";
-    console.log(`[graph] alias ${entry.find} → ${target}  来自 ${entry.source}${exists}`);
-  }
-
-  for (const { file, source, template } of parsed) {
-    symbols.push(...extractSymbols(file, source));
-    if (file.language === "vue") symbols.push(vueComponentSymbol(file, source));
-    edges.push(...extractDependencyEdges(file, source, context));
-    edges.push(...extractRenderEdges(file, source, context, template));
-  }
-
-  // 静默丢边会让循环依赖漏检、耦合度虚低，比直接报错更危险，至少要让它可见
+/**
+ * 模块解析的诊断输出。
+ *
+ * 静默丢边会让循环依赖漏检、耦合度虚低，比直接报错更危险；
+ * 而 alias「读到了」不等于「用上了」，命中与落空必须分开报，
+ * 否则无从判断配置识别与依赖图补全之间的差距。
+ */
+function reportResolveDiagnostics(context: ResolveContext): void {
   if (context.outsideRepo.size > 0) {
     console.warn(
       `[graph] ${context.outsideRepo.size} 个模块解析到了仓库之外，未纳入依赖图` +
@@ -86,8 +43,6 @@ export function extractGraph(
     );
   }
 
-  // alias 读到了不等于用上了：把命中与落空分别报出来，
-  // 否则「配置已识别」和「依赖图真的补全了」之间的差距无从判断
   for (const entry of context.aliases) {
     const hits = context.aliasHits.get(entry.find) ?? 0;
     const misses = context.aliasMisses.get(entry.find) ?? 0;
@@ -109,6 +64,112 @@ export function extractGraph(
         `若 alias 由插件动态注入或写在被 import 的独立文件里，请在 tsconfig 中补上同样的映射`,
     );
   }
+}
+
+export interface ParsedFile {
+  file: FileNode;
+  source: SourceFile;
+  /** Vue SFC 的 template 原文，用于提取 render 边 */
+  template?: string;
+}
+
+/**
+ * 已装载的语义项目。
+ *
+ * 抽出来是为了让改造流程复用同一套装载与模块解析逻辑——
+ * tsconfig、构建配置 alias、Vue SFC 抽取这些规则如果两边各写一份，
+ * 迟早会出现「分析认为有这条边、改造却找不到」的错位。
+ */
+export interface SemanticProject {
+  project: Project;
+  parsed: ParsedFile[];
+  /** 把 import 说明符解析成仓库内的文件 */
+  resolve: (specifier: string, fromFilePath: string) => FileNode | undefined;
+  compilerOptions: ts.CompilerOptions;
+  /** 打印 alias 命中与未解析统计 */
+  reportDiagnostics: () => void;
+}
+
+export function openSemanticProject(
+  root: string,
+  files: FileNode[],
+  contents: Map<string, string>,
+): SemanticProject {
+  const project = createProject(root);
+  const compilerOptions = project.getCompilerOptions();
+  const parsed: ParsedFile[] = [];
+
+  for (const file of files) {
+    const absolute = path.join(root, file.path);
+
+    if (file.language === "vue") {
+      const sfc = loadVueSource(project, absolute, contents.get(file.path) ?? "");
+      if (sfc) parsed.push({ file, source: sfc.source, template: sfc.template });
+      continue;
+    }
+
+    const source = project.addSourceFileAtPathIfExists(absolute);
+    if (source) parsed.push({ file, source });
+  }
+
+  const context: ResolveContext = {
+    root,
+    byPath: new Map(files.map((file) => [file.path, file])),
+    byLowerPath: new Map(files.map((file) => [file.path.toLowerCase(), file])),
+    compilerOptions,
+    aliases: loadBuildConfigAliases(root),
+    outsideRepo: new Set(),
+    unresolvedAliases: new Map(),
+    aliasHits: new Map(),
+    aliasMisses: new Map(),
+  };
+
+  for (const entry of context.aliases) {
+    const target = path.relative(root, entry.replacement) || ".";
+    const exists = fs.existsSync(entry.replacement) ? "" : "（目标目录不存在）";
+    console.log(`[graph] alias ${entry.find} → ${target}  来自 ${entry.source}${exists}`);
+  }
+
+  return {
+    project,
+    parsed,
+    compilerOptions,
+    resolve: (specifier, fromFilePath) => resolveModule(specifier, fromFilePath, context),
+    reportDiagnostics: () => reportResolveDiagnostics(context),
+  };
+}
+
+export function extractGraph(
+  root: string,
+  files: FileNode[],
+  contents: Map<string, string>,
+): { symbols: SymbolNode[]; edges: RelationEdge[] } {
+  const byPath = new Map(files.map((file) => [file.path, file]));
+  const symbols: SymbolNode[] = [];
+  const edges: RelationEdge[] = [];
+
+  const semantic = openSemanticProject(root, files, contents);
+  const { parsed } = semantic;
+  const context: ResolveContext = {
+    root,
+    byPath,
+    byLowerPath: new Map(files.map((file) => [file.path.toLowerCase(), file])),
+    compilerOptions: semantic.compilerOptions,
+    aliases: loadBuildConfigAliases(root),
+    outsideRepo: new Set(),
+    unresolvedAliases: new Map(),
+    aliasHits: new Map(),
+    aliasMisses: new Map(),
+  };
+
+  for (const { file, source, template } of parsed) {
+    symbols.push(...extractSymbols(file, source));
+    if (file.language === "vue") symbols.push(vueComponentSymbol(file, source));
+    edges.push(...extractDependencyEdges(file, source, context));
+    edges.push(...extractRenderEdges(file, source, context, template));
+  }
+
+  reportResolveDiagnostics(context);
 
   // SFC 解析失败的 .vue 退回正则，至少保住相对路径 import
   const parsedPaths = new Set(parsed.map((item) => item.file.path));
@@ -261,12 +322,7 @@ function resolveModule(
   fromFilePath: string,
   context: ResolveContext,
 ): FileNode | undefined {
-  const resolved = ts.resolveModuleName(
-    specifier,
-    fromFilePath,
-    context.compilerOptions,
-    ts.sys,
-  );
+  const resolved = ts.resolveModuleName(specifier, fromFilePath, context.compilerOptions, ts.sys);
   const resolvedFileName = resolved.resolvedModule?.resolvedFileName;
   if (!resolvedFileName) {
     // TypeScript 不认识 .vue 这类扩展名，模块解析会直接失败，
@@ -321,7 +377,10 @@ function resolveByHand(
 
     const rest = wildcard ? specifier.slice(prefix.length) : "";
     for (const target of targets) {
-      const mapped = path.resolve(baseUrl, target.endsWith("*") ? target.slice(0, -1) + rest : target);
+      const mapped = path.resolve(
+        baseUrl,
+        target.endsWith("*") ? target.slice(0, -1) + rest : target,
+      );
       const found = lookupByAbsolute(mapped, context);
       if (found) return found;
     }
@@ -434,6 +493,10 @@ function isReactClassComponent(declaration: ClassDeclaration): boolean {
 
 /**
  * 依赖边：静态 import、re-export、动态 import()。
+ *
+ * 纯类型导入记为 `type-reference` 而不是 `import`。
+ * 这不是分类洁癖：`import type` 在编译期被整条擦除，运行时根本不存在这个依赖，
+ * 把它算进 import 边会让循环依赖检测虚报——报出来的「环」实际上一行运行时代码都没有。
  */
 function extractDependencyEdges(
   file: FileNode,
@@ -442,25 +505,31 @@ function extractDependencyEdges(
 ): RelationEdge[] {
   const edges: RelationEdge[] = [];
   const filePath = source.getFilePath();
+  const verbatim = context.compilerOptions.verbatimModuleSyntax === true;
 
-  const record = (specifier: string, node: Node): void => {
+  const record = (specifier: string, node: Node, kind: RelationKind = "import"): void => {
     const target = resolveModule(specifier, filePath, context);
     if (!target || target.id === file.id) return;
     edges.push({
       from: file.id,
       to: target.id,
-      kind: "import",
+      kind,
       location: { file: file.path, line: node.getStartLineNumber() },
     });
   };
 
   for (const declaration of source.getImportDeclarations()) {
-    record(declaration.getModuleSpecifierValue(), declaration);
+    record(
+      declaration.getModuleSpecifierValue(),
+      declaration,
+      erasedAtRuntime(declaration, verbatim) ? "type-reference" : "import",
+    );
   }
 
   for (const declaration of source.getExportDeclarations()) {
     const specifier = declaration.getModuleSpecifierValue();
-    if (specifier) record(specifier, declaration);
+    if (!specifier) continue;
+    record(specifier, declaration, declaration.isTypeOnly() ? "type-reference" : "import");
   }
 
   for (const call of source.getDescendantsOfKind(SyntaxKind.CallExpression)) {
@@ -472,6 +541,27 @@ function extractDependencyEdges(
   }
 
   return edges;
+}
+
+/**
+ * 这条 import 编译后是否完全消失。
+ *
+ * 两种写法要区别对待：
+ * - `import type { A } from "m"`：声明级，任何配置下都整条擦除
+ * - `import { type A } from "m"`：内联级，默认同样擦除；但开了
+ *   `verbatimModuleSyntax` 后会保留成 `import {} from "m"`，
+ *   变成一条真实的副作用导入，运行时依赖仍然成立
+ */
+export function erasedAtRuntime(declaration: ImportDeclaration, verbatim: boolean): boolean {
+  if (declaration.isTypeOnly()) return true;
+  if (verbatim) return false;
+  if (declaration.getDefaultImport() || declaration.getNamespaceImport()) return false;
+
+  const named = declaration.getNamedImports();
+  // 没有具名导入即副作用导入，必须保留
+  if (named.length === 0) return false;
+
+  return named.every((specifier) => specifier.isTypeOnly());
 }
 
 /**
@@ -537,10 +627,7 @@ function extractTemplateTags(template: string): Array<{ name: string; line: numb
 }
 
 /** 建立「本地标识符 → 来源文件」映射，覆盖默认导入、具名导入（含 as 重命名）与命名空间导入 */
-function collectImportedNames(
-  source: SourceFile,
-  context: ResolveContext,
-): Map<string, FileNode> {
+function collectImportedNames(source: SourceFile, context: ResolveContext): Map<string, FileNode> {
   const importedFrom = new Map<string, FileNode>();
   const filePath = source.getFilePath();
 
