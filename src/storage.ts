@@ -1,8 +1,49 @@
-import Database from "better-sqlite3";
+import type DatabaseConstructor from "better-sqlite3";
+import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { AnalysisResult } from "./model.js";
+
+/**
+ * SQLite 索引是**加分项，不是主产物**。
+ *
+ * 分析真正要交付的是 `.reposurgeon/reports/` 下的 md / html / json；
+ * 索引只用来让 Web 看板加载命令行跑出的历史结果。
+ *
+ * better-sqlite3 是原生模块，会在这些场景下不可用：换了 Node 大版本没重新
+ * 编译、CI 镜像里没有构建工具链、在只读文件系统上跑。此前它是顶层静态导入，
+ * 一旦加载失败整条分析流水线跟着崩——用户明明只想要一份 Markdown 报告，
+ * 却因为一个可选的加速索引拿不到任何东西。
+ *
+ * 所以改成惰性加载 + 一次性告警：拿不到就不写索引，分析照常完成。
+ */
+const requireFrom = createRequire(import.meta.url);
+
+/** undefined 表示还没尝试加载，null 表示加载失败且已经提示过 */
+let sqlite: typeof DatabaseConstructor | null | undefined;
+
+function getSqlite(): typeof DatabaseConstructor | null {
+  if (sqlite !== undefined) return sqlite;
+
+  try {
+    const loaded = requireFrom("better-sqlite3") as typeof DatabaseConstructor;
+    // require 成功不代表能用：原生绑定是在第一次构造时才去 dlopen 的。
+    // 这里用一个内存库做探针，把失败收敛到这一处，而不是散落在每个调用点。
+    new loaded(":memory:").close();
+    sqlite = loaded;
+  } catch (error) {
+    sqlite = null;
+    const reason = error instanceof Error ? error.message.split("\n")[0] : String(error);
+    console.warn(
+      `[storage] better-sqlite3 不可用（${reason}），本次跳过 SQLite 索引。\n` +
+        "          报告仍会写入 .reposurgeon/reports/；Web 看板将无法加载历史结果。\n" +
+        "          修复：pnpm rebuild better-sqlite3（换过 Node 版本后通常需要）",
+    );
+  }
+
+  return sqlite;
+}
 
 const RUNS_TABLE = `
   CREATE TABLE IF NOT EXISTS runs (
@@ -26,14 +67,20 @@ const CHECKPOINTS_TABLE = `
 `;
 
 async function openDatabase(root: string) {
+  const Database = getSqlite();
+  if (!Database) return undefined;
+
   const dir = path.join(root, ".reposurgeon");
   await mkdir(dir, { recursive: true });
   const dbPath = path.join(dir, "index.db");
   return { db: new Database(dbPath), dbPath };
 }
 
-export async function saveIndex(root: string, result: AnalysisResult): Promise<string> {
-  const { db, dbPath } = await openDatabase(root);
+export async function saveIndex(root: string, result: AnalysisResult): Promise<string | undefined> {
+  const opened = await openDatabase(root);
+  if (!opened) return undefined;
+
+  const { db, dbPath } = opened;
   db.pragma("journal_mode = WAL");
   db.exec(RUNS_TABLE);
   db.exec(FILES_FTS_TABLE);
@@ -64,8 +111,11 @@ export async function saveCheckpoint(
   root: string,
   runId: string,
   state: unknown,
-): Promise<string> {
-  const { db, dbPath } = await openDatabase(root);
+): Promise<string | undefined> {
+  const opened = await openDatabase(root);
+  if (!opened) return undefined;
+
+  const { db, dbPath } = opened;
   db.exec(CHECKPOINTS_TABLE);
 
   db.prepare(
@@ -106,8 +156,9 @@ function indexPath(root: string): string {
  * 全部反序列化到 Node 侧。
  */
 export function readRunSummaries(root: string, limit = 10): RunSummary[] {
+  const Database = getSqlite();
   const dbPath = indexPath(root);
-  if (!existsSync(dbPath)) return [];
+  if (!Database || !existsSync(dbPath)) return [];
 
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
@@ -134,14 +185,14 @@ export function readRunSummaries(root: string, limit = 10): RunSummary[] {
 
 /** 读取最近一次分析的完整报告 */
 export function readLatestRun(root: string): AnalysisResult | undefined {
+  const Database = getSqlite();
   const dbPath = indexPath(root);
-  if (!existsSync(dbPath)) return undefined;
+  if (!Database || !existsSync(dbPath)) return undefined;
 
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
     const row = db.prepare("SELECT payload FROM runs ORDER BY id DESC LIMIT 1").get() as
-      | { payload: string }
-      | undefined;
+      { payload: string } | undefined;
     return row ? (JSON.parse(row.payload) as AnalysisResult) : undefined;
   } catch {
     return undefined;

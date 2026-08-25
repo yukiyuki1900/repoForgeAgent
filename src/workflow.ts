@@ -5,6 +5,7 @@ import { analyzeArchitecture, type ArchitectureReport } from "./architecture.js"
 import { analyzeCycles, analyzeFrontend, calculateMetrics } from "./analyzers.js";
 import { extractGraph, graphToMermaid } from "./graph.js";
 import { parseQueryWithModel, resolveModel } from "./llm.js";
+import { planExecution, summarizePlan, type ExecutionPlan } from "./plan.js";
 import type {
   AnalysisResult,
   FileNode,
@@ -35,6 +36,10 @@ import { saveCheckpoint, saveIndex } from "./storage.js";
 const State = Annotation.Root({
   root: Annotation<string>(),
   query: Annotation<string | undefined>(),
+  /** 用户显式要求全量分析，跳过意图裁剪 */
+  full: Annotation<boolean | undefined>(),
+  // 通道名不能与节点名重复，所以产出它的节点叫 plan，通道叫 executionPlan
+  executionPlan: Annotation<ExecutionPlan | undefined>(),
   files: Annotation<FileNode[]>({ reducer: (_current, next) => next, default: () => [] }),
   contents: Annotation<Map<string, string>>({
     reducer: (_current, next) => next,
@@ -51,7 +56,10 @@ const State = Annotation.Root({
   architecture: Annotation<ArchitectureReport | undefined>(),
   metrics: Annotation<AnalysisResult["metrics"] | undefined>(),
   queryPlan: Annotation<QueryPlan | undefined>(),
-  retrieval: Annotation<RetrievalResult[]>({ reducer: (_current, next) => next, default: () => [] }),
+  retrieval: Annotation<RetrievalResult[]>({
+    reducer: (_current, next) => next,
+    default: () => [],
+  }),
   narrationContext: Annotation<NarrationContext | undefined>(),
   narration: Annotation<Narration | undefined>(),
   mermaid: Annotation<string>(),
@@ -66,6 +74,9 @@ export type WorkflowState = typeof State.State;
 
 type QueryPlanner = (query: string) => QueryPlan | Promise<QueryPlan>;
 type Narrator = (context: NarrationContext) => Promise<Narration | undefined>;
+type Planner = (
+  input: Parameters<typeof planExecution>[0],
+) => ExecutionPlan | Promise<ExecutionPlan>;
 type NodeHandler = (state: WorkflowState) => Promise<Partial<WorkflowState>>;
 
 /**
@@ -166,6 +177,7 @@ function summarize(state: WorkflowState) {
     root: state.root,
     query: state.query,
     currentStep: state.currentStep,
+    executionPlan: state.executionPlan,
     stack: state.stack,
     metrics: state.metrics,
     narration: state.narration,
@@ -182,6 +194,8 @@ function summarize(state: WorkflowState) {
 /** 每个节点用一句话汇报自己的产出，供 CLI 与前端直接展示 */
 function describe(name: string, next: Partial<WorkflowState>): string | undefined {
   switch (name) {
+    case "plan":
+      return next.executionPlan ? summarizePlan(next.executionPlan) : undefined;
     case "scanFiles":
       return `${next.files?.length ?? 0} 个文件`;
     case "detectStack":
@@ -199,7 +213,9 @@ function describe(name: string, next: Partial<WorkflowState>): string | undefine
     case "frontend":
       return `${next.findings?.length ?? 0} 个前端问题`;
     case "retrieveContext":
-      return next.retrieval?.length ? `${next.retrieval.length} 条检索结果` : "未提供检索问题";
+      // 「没提问」和「提了问但没命中」是两回事，早先都显示成前者
+      if (!next.queryPlan) return "未提供检索问题";
+      return next.retrieval?.length ? `${next.retrieval.length} 条检索结果` : "检索无命中";
     case "narrate":
       return next.narration ? "架构解读已生成" : "未配置模型，已跳过";
     case "render":
@@ -213,6 +229,8 @@ export interface GraphOptions {
   runId?: string;
   queryPlanner?: QueryPlanner;
   narrator?: Narrator;
+  /** 默认是规则决策；留出注入点，方便换成模型或做实验对照 */
+  planner?: Planner;
   onProgress?: ProgressListener;
 }
 
@@ -221,6 +239,7 @@ export function createAnalysisGraph(options: GraphOptions = {}) {
     runId,
     queryPlanner = defaultQueryPlanner,
     narrator = defaultNarrator,
+    planner = planExecution,
     onProgress,
   } = options;
   const context: NodeContext = { runId, onProgress };
@@ -304,6 +323,7 @@ export function createAnalysisGraph(options: GraphOptions = {}) {
       "frontend",
       node("frontend", async (state) => ({ findings: analyzeFrontend(state.contents) }), context),
     )
+    .addNode("plan", node("plan", planHandler(planner), context))
     .addNode("retrieveContext", node("retrieveContext", retrievalHandler(queryPlanner), context))
     .addNode("narrate", node("narrate", narrateHandler(narrator), context))
     .addNode("render", node("render", renderHandler, context))
@@ -311,27 +331,81 @@ export function createAnalysisGraph(options: GraphOptions = {}) {
     .addEdge(START, "loadRepository")
     .addEdge("loadRepository", "scanFiles")
     .addEdge("scanFiles", "detectStack")
-    .addEdge("detectStack", "parseSemantic")
+    // 先决策再干活：plan 要看到文件数、技术栈与用户问题才能排布后面的节点
+    .addEdge("detectStack", "plan")
+    .addEdge("plan", "parseSemantic")
 
-    // fan-out：四个分析器互不依赖，并行执行
-    .addEdge("parseSemantic", "analyzeArchitecture")
-    .addEdge("parseSemantic", "dependency")
-    .addEdge("parseSemantic", "quality")
-    .addEdge("parseSemantic", "frontend")
+    // 条件 fan-out：并行分支由计划动态决定。
+    // dependency / quality 恒在——报告的 metrics 与循环依赖是必填内容，
+    // 且两者合计 17ms，裁掉只会让报告残缺，省不下任何东西
+    .addConditionalEdges("parseSemantic", selectAnalyzers, [
+      "analyzeArchitecture",
+      "dependency",
+      "quality",
+      "frontend",
+    ])
 
-    // fan-in：全部完成后汇聚
-    .addEdge("analyzeArchitecture", "retrieveContext")
-    .addEdge("dependency", "retrieveContext")
-    .addEdge("quality", "retrieveContext")
-    .addEdge("frontend", "retrieveContext")
+    // fan-in：四个分支指向同一个下一站，该节点只执行一次；
+    // 未被调度的分支不会阻塞汇聚。下一站是谁由计划决定——
+    // 没有检索问题就不进 retrieveContext，而不是让它空转一趟再说自己跳过了
+    .addConditionalEdges("analyzeArchitecture", afterAnalyzers, [...AFTER_ANALYZERS])
+    .addConditionalEdges("dependency", afterAnalyzers, [...AFTER_ANALYZERS])
+    .addConditionalEdges("quality", afterAnalyzers, [...AFTER_ANALYZERS])
+    .addConditionalEdges("frontend", afterAnalyzers, [...AFTER_ANALYZERS])
 
-    // 事实全部就位后，再交给 LLM 做解释与优先级排序
-    .addEdge("retrieveContext", "narrate")
+    // 事实全部就位后再决定要不要花 18 秒让模型写一段解读
+    .addConditionalEdges("retrieveContext", selectNarration, ["narrate", "render"])
     .addEdge("narrate", "render")
     .addEdge("render", END);
 
   // MemorySaver 仅在进程内保留状态，进程退出即丢失
   return graph.compile({ checkpointer: new MemorySaver() });
+}
+
+/**
+ * 条件 fan-out：这一轮跑哪几个分析器。
+ *
+ * 返回数组即动态并行分支。LangGraph 只会为返回的节点触发调度，
+ * 没被选中的分支不执行、也不会阻塞下游的 fan-in。
+ */
+function selectAnalyzers(state: WorkflowState): string[] {
+  const optional = new Set(state.executionPlan?.run ?? ["analyzeArchitecture", "frontend"]);
+  const branches = ["dependency", "quality"];
+
+  if (optional.has("analyzeArchitecture")) branches.push("analyzeArchitecture");
+  if (optional.has("frontend")) branches.push("frontend");
+  return branches;
+}
+
+// as const：LangGraph 会用字面量类型校验路由目标，写成 string[] 编译不过。
+// 这层校验很有用——它能在编译期挡住「路由到一个不存在的节点名」
+const AFTER_ANALYZERS = ["retrieveContext", "narrate", "render"] as const;
+type AfterAnalyzers = (typeof AFTER_ANALYZERS)[number];
+
+/**
+ * 分析器跑完之后去哪。
+ *
+ * 四个分支返回同一个目标即构成 fan-in，该节点只会执行一次。
+ * 这样「跳过」就是真的不执行，而不是进去空转一趟再报告自己被跳过了——
+ * 进度条上出现一个耗时 0ms 的节点，同时报告里说它被跳过，是自相矛盾的。
+ */
+function afterAnalyzers(state: WorkflowState): AfterAnalyzers {
+  if (state.query) return "retrieveContext";
+  return selectNarration(state);
+}
+
+function selectNarration(state: WorkflowState): "narrate" | "render" {
+  return state.executionPlan?.run.includes("narrate") ? "narrate" : "render";
+}
+
+function planHandler(planner: Planner): NodeHandler {
+  return async (state) => ({
+    executionPlan: await planner({
+      query: state.query,
+      full: state.full,
+      hasModel: resolveModel() !== undefined,
+    }),
+  });
 }
 
 function retrievalHandler(queryPlanner: QueryPlanner): NodeHandler {
@@ -390,6 +464,7 @@ const renderHandler: NodeHandler = async (state) => {
     metrics: state.metrics!,
     narration: state.narration,
     mermaid: state.architecture?.mermaid ?? graphToMermaid(state.files, state.edges),
+    plan: state.executionPlan,
     generatedAt: new Date().toISOString(),
   };
 
@@ -401,6 +476,8 @@ const renderHandler: NodeHandler = async (state) => {
 
 export interface RunOptions {
   query?: string;
+  /** 忽略意图裁剪，跑满全部节点 */
+  full?: boolean;
   runId?: string;
   onProgress?: ProgressListener;
 }
@@ -410,7 +487,7 @@ export interface RunOptions {
  * 就会打印 MaxListenersExceededWarning。这里按节点数留出余量，
  * 避免每次运行都在输出里插一条无害但扎眼的警告。
  */
-const NODE_COUNT = 11;
+const NODE_COUNT = 12;
 setMaxListeners(NODE_COUNT * 2);
 
 export async function runAnalysis(root: string, options: RunOptions = {}): Promise<WorkflowState> {
@@ -421,7 +498,7 @@ export async function runAnalysis(root: string, options: RunOptions = {}): Promi
   });
 
   const result = await graph.invoke(
-    { root, query: options.query, currentStep: "start" },
+    { root, query: options.query, full: options.full, currentStep: "start" },
     { configurable: { thread_id: runId } },
   );
 

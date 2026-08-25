@@ -12,6 +12,7 @@ import { runAnalysis, type ProgressEvent, type WorkflowState } from "./workflow.
 interface AnalyzeOptions {
   json?: boolean;
   query?: string;
+  full?: boolean;
 }
 
 interface RefactorOptions {
@@ -30,10 +31,12 @@ program
   .command("analyze")
   .argument("<directory>", "本地仓库目录")
   .option("--query <query>", "自然语言检索问题")
+  .option("--full", "忽略意图裁剪，跑满全部节点")
   .option("--json", "仅输出 JSON")
   .action(async (directory: string, options: AnalyzeOptions) => {
     const workflow = await runAnalysis(directory, {
       query: options.query,
+      full: options.full,
       // JSON 模式下保持输出纯净，不混入进度行
       onProgress: options.json ? undefined : printProgress,
     });
@@ -72,14 +75,18 @@ function formatSummary(workflow: WorkflowState): string {
     ? `检索结果：${workflow.retrieval.map((item) => item.path).join("、")}`
     : `Mermaid：${workflow.mermaid}`;
 
+  const skipped = workflow.executionPlan?.decisions.filter((item) => !item.run) ?? [];
   const narration = workflow.narration
     ? `架构解读：${workflow.narration.summary}`
-    : "架构解读：未配置模型，仅输出确定性分析结果";
+    : `架构解读：${skipped.some((item) => item.node === "narrate") ? "按执行计划跳过（加 --full 可强制生成）" : "未配置模型，仅输出确定性分析结果"}`;
 
   const artifacts = path.join(workflow.root, ".reposurgeon");
 
   return [
     `分析完成：${workflow.files.length} 个文件，${workflow.edges.length} 条依赖边，${workflow.findings.length} 个发现`,
+    ...(skipped.length > 0
+      ? [`本次跳过：${skipped.map((item) => `${item.node}（${item.why}）`).join("；")}`]
+      : []),
     narration,
     detail,
     "",

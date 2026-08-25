@@ -91,3 +91,31 @@ pnpm install
 ```
 
 `@vue/compiler-sfc` 是可选依赖，缺失时 `.vue` 会退回正则解析（alias 导入与 template 组件引用会缺失）并打印提示，不影响其它功能。
+
+## 报告出来了，但看板加载不到历史结果
+
+命令行里出现这段告警：
+
+```
+[storage] better-sqlite3 不可用（...），本次跳过 SQLite 索引。
+```
+
+`better-sqlite3` 是原生模块，换过 Node 大版本后需要重新编译：
+
+```bash
+pnpm rebuild better-sqlite3
+```
+
+分析本身不受影响——`.reposurgeon/reports/` 下的 md / html / json 照常产出，只是看板无法加载命令行跑过的历史记录。
+
+## 报告里少了某一节
+
+先看报告开头的「执行计划」一节。定向提问时 `plan` 会裁掉与答案无关的节点，被跳过的节点及原因都列在那里。
+
+想要完整报告就加 `--full`：
+
+```bash
+pnpm analyze ./your-project --query "有循环依赖吗" --full
+```
+
+注意区分两种「架构解读缺席」：`本次按执行计划跳过` 是主动取舍，`未配置模型` 是缺 `OPENAI_API_KEY`。

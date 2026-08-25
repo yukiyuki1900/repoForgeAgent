@@ -2,27 +2,30 @@
 
 面向前端仓库的代码分析 Agent。用 AST 建立语义图，用 LangGraph 编排分析流水线，LLM 只负责解读——**事实由确定性代码算出**。
 
+以下是一个 319 文件真实 Vue 仓库上的实测输出：
+
 ```
 $ pnpm analyze ./your-project
 
-  ✓ loadRepository            2ms
-  ✓ scanFiles              1140ms  1842 个文件
-  ✓ detectStack              18ms  Vue + Vite
-  ✓ parseSemantic         14210ms  12405 个符号 · 8931 条关系边
-  ✓ analyzeArchitecture      96ms  14 个模块
-  ✓ dependency               61ms  3 处循环依赖
-  ✓ quality                  12ms  维护性评分 72
-  ✓ frontend                 88ms  18 个前端问题
-  ✓ retrieveContext         143ms  3 条检索结果
-  ✓ narrate                4820ms  架构解读已生成
-  ✓ render                   74ms  报告已输出
+  ✓ loadRepository           11ms
+  ✓ scanFiles                90ms  319 个文件
+  ✓ detectStack               2ms  Vue + Vite
+  ✓ plan                      0ms  意图：全量审计 · 跳过 retrieveContext
+  ✓ parseSemantic          4737ms  2694 个符号 · 936 条关系边
+  ✓ quality                   6ms  维护性评分 56
+  ✓ frontend                  7ms  18 个前端问题
+  ✓ analyzeArchitecture      11ms  14 个模块
+  ✓ dependency               11ms  1 处循环依赖
+  ✓ narrate               18156ms  架构解读已生成
+  ✓ render                   23ms  报告已输出
 ```
 
 ## 核心能力
 
+- **执行计划** — 先识别意图再决定跑哪些节点，条件 fan-out 动态裁剪分支；每一次裁剪都带理由并写进报告
 - **语义解析** — ts-morph 建立符号与依赖图，模块解析交给 TypeScript 编译器；自动读取 tsconfig `paths` 与 vite / webpack / rspack / nuxt 的 `resolve.alias`
 - **Vue / React 双栈** — Vue SFC 经 `@vue/compiler-sfc` 抽出 script 走同一条 AST 路径；render 关系边分别取自 JSX 与 template
-- **依赖分析** — Tarjan 循环依赖检测、环上最优切点（按引用次数最少选取）、模块级依赖图
+- **依赖分析** — Tarjan 循环依赖检测、环上最优切点（按引用次数最少选取）、模块级依赖图；`import type` 记为类型边，不计入运行时环
 - **改造闭环** — 识别环上仅用于类型的导入，改成 `import type` 并写回仓库；改动前后各做一次全量类型检查（判据是不新增错误），再重扫仓库重跑 Tarjan 与预测对账，任一不符自动 `git checkout` 回滚
 - **前端专项** — Hooks 疑似条件调用、lint / type 绕过、大文件、维护性评分
 - **架构逆向** — 剥离公共前缀后聚合模块、分层推断、Mermaid 架构图
@@ -38,8 +41,9 @@ pnpm install
 
 | 命令 | 说明 |
 |---|---|
-| `pnpm analyze ./your-project` | 分析仓库 |
-| `pnpm analyze ./your-project --query "处理登录的组件"` | 带语义检索 |
+| `pnpm analyze ./your-project` | 全量审计 |
+| `pnpm analyze ./your-project --query "有循环依赖吗"` | 定向提问，只跑与答案相关的节点 |
+| `pnpm analyze ./your-project --full` | 忽略意图裁剪，跑满全部节点 |
 | `pnpm analyze ./your-project --json` | 机器可读输出 |
 | `pnpm refactor ./your-project` | 改造计划，只读 |
 | `pnpm refactor ./your-project --apply` | 写入 + 验证 + 失败回滚 |
@@ -50,12 +54,49 @@ pnpm install
 
 ```
 <your-project>/.reposurgeon/
-├── index.db          SQLite：历次报告与节点状态快照
-├── reports/          report.html / report.md / report.json
-└── refactors/<时间戳>/   refactor.diff · verify-report.md
+├── reports/              report.html / report.md / report.json
+├── refactors/<时间戳>/    refactor.diff · verify-report.md
+└── index.db              SQLite 索引（可选，供看板加载历史结果）
 ```
 
-CLI 与看板是独立进程，通过这个 SQLite 索引打通——看板里填入同一路径即可加载命令行跑出的结果。
+CLI 与看板是独立进程，通过这个 SQLite 索引打通——看板里填入同一路径即可加载命令行跑出的结果。索引依赖原生模块 `better-sqlite3`，不可用时会告警并跳过，报告照常输出。
+
+## 执行计划
+
+同一个仓库，问法不同，跑的节点就不同：
+
+```
+$ pnpm analyze ./your-project --query "有循环依赖吗"
+
+  ✓ plan   0ms  意图：依赖与循环 · 跳过 analyzeArchitecture、frontend、narrate
+```
+
+为什么值得这么做——看上面那次全量运行的耗时分解：
+
+| 节点 | 耗时 | 占比 |
+|---|---|---|
+| `narrate` | 18156ms | **79%** |
+| `parseSemantic` | 4737ms | 21% |
+| 其余 8 个节点合计 | ~160ms | <1% |
+
+只想知道「有没有循环依赖」时，等 23 秒里有 18 秒花在生成一段没人要的架构叙述上。裁掉之后约 **4.9 秒**（按上表分解推算），token 消耗归零。
+
+裁剪规则写在 [plan.ts](src/plan.ts)：
+
+| 意图 | analyzeArchitecture | frontend | narrate |
+|---|:---:|:---:|:---:|
+| 全量审计（默认） | ✓ | ✓ | ✓ |
+| 依赖与循环 | — | — | — |
+| 架构与分层 | ✓ | — | ✓ |
+| 质量与技术债 | — | ✓ | — |
+| 语义检索 | — | — | — |
+
+几条刻意的取舍：
+
+- **`dependency` 与 `quality` 恒在** —— 报告的 `metrics` 与循环依赖是必填内容，跳过它们等于产出一份残缺却看不出残缺的报告；何况两者合计 17ms，省下来没有意义
+- **不为了「像 Agent」而路由** —— 四个确定性分析器加起来 35ms，路由它们是自欺欺人。真正值得决策的只有 LLM 节点
+- **决策用规则不用模型** —— 意图分类是低维、可枚举、要求可复现的判断，交给 LLM 只换来延迟、不确定性和「幻觉出不存在的节点名」的风险。`createAnalysisGraph({ planner })` 留了注入点，架构上并不锁死
+- **裁剪必须留痕** —— 每个被跳过的节点都带理由，写进 CLI 输出和报告的「执行计划」一节。否则读报告的人会把「本次没跑」误解成「跑了但没发现问题」
 
 ## 改造闭环
 
@@ -89,18 +130,22 @@ $ pnpm refactor ./your-project --apply
 ## 工作流
 
 ```
-START → loadRepository → scanFiles → detectStack → parseSemantic
-                                                        │
-                        ┌───────────────┬───────────────┼───────────────┐
-                        ▼               ▼               ▼               ▼
-                 analyzeArchitecture  dependency     quality        frontend   ← 并行
-                        └───────────────┴───────────────┴───────────────┘
-                                                        ▼
-                                                 retrieveContext
-                                                        ▼
-                                                     narrate                   ← 唯一的 LLM 节点
-                                                        ▼
-                                                      render → END
+START → loadRepository → scanFiles → detectStack → plan     ← 决策点
+                                                     │
+                                                     ▼
+                                              parseSemantic
+                                                     │
+                       ┌─────────────┬───────────────┼───────────────┐
+                       ▼             ▼               ▼               ▼
+              analyzeArchitecture  dependency     quality        frontend   ← 条件 fan-out
+                  （可裁剪）        （恒在）       （恒在）        （可裁剪）
+                       └─────────────┴───────────────┴───────────────┘
+                                                     ▼
+                                          retrieveContext              ← 有问题才进
+                                                     ▼
+                                                  narrate              ← 唯一的 LLM 节点，可裁剪
+                                                     ▼
+                                                  render → END
 ```
 
 ## 配置
@@ -123,7 +168,9 @@ cp .env.example .env
 
 `.env.local` 会覆盖 `.env`；显式 `export` 的环境变量优先级最高。
 
-单次分析约消耗 2000 输入 + 1400 输出 token，用国内兼容网关跑百次量级的成本在个位数元。
+单次全量分析约消耗 2000 输入 + 1400 输出 token，用国内兼容网关跑百次量级的成本在个位数元。定向提问会跳过 `narrate`，token 消耗为零。
+
+未配置模型时 `plan` 会直接不走 `narrate` 这条边，而不是进入节点后再降级。
 
 `@vue/compiler-sfc` 是可选依赖，仅在仓库存在 `.vue` 文件时需要。
 
@@ -131,7 +178,8 @@ cp .env.example .env
 
 ```
 src/
-├── workflow.ts      LangGraph 编排、State 通道、节点级进度事件
+├── workflow.ts      LangGraph 编排、State 通道、条件路由、节点级进度事件
+├── plan.ts          意图识别与节点裁剪规则
 ├── scanner.ts       文件扫描、hash、行数、圈复杂度
 ├── stack.ts         技术栈识别
 ├── graph.ts         ts-morph 语义解析：符号、依赖边、render 边
@@ -144,7 +192,7 @@ src/
 ├── refactor.ts      import type 拆环的检测与模拟
 ├── apply.ts         写入、两层验证、失败回滚与产物留档
 ├── report.ts        Markdown / HTML / JSON 报告
-├── storage.ts       SQLite 索引与状态快照
+├── storage.ts       SQLite 索引与状态快照（原生模块不可用时自动降级）
 ├── llm.ts           模型解析与结构化输出
 ├── env.ts           .env 加载
 ├── api.ts           异步任务 API + SSE 进度流
@@ -152,7 +200,7 @@ src/
 
 web/                 React + Vite 分析看板
 fixtures/            回归评估用例
-tests/               改造闭环的端到端用例（会建临时 git 仓库真实写入）
+tests/               端到端用例：条件路由与改造闭环（会真实写盘）
 scripts/             评估执行器与本地启动脚本
 ```
 
@@ -160,7 +208,7 @@ scripts/             评估执行器与本地启动脚本
 
 ```bash
 pnpm eval          # 回归评估：校验分析器在固定输入上产出的事实
-pnpm test          # 改造闭环端到端：真的写盘、真的验证、真的回滚
+pnpm test          # 端到端：图真的能跑通、改动真的写盘、验证真的会拦
 pnpm build         # 类型检查与编译
 pnpm format        # 代码格式化
 ```

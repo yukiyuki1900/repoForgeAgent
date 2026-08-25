@@ -46,7 +46,15 @@ export interface Report {
   metrics: { score: number; dimensions: Record<string, number> };
   narration?: Narration;
   mermaid: string;
+  /** 本次实际执行了哪些节点、跳过了什么、为什么 */
+  plan?: ExecutionPlan;
   generatedAt: string;
+}
+
+export interface ExecutionPlan {
+  intent: string;
+  rationale: string;
+  decisions: Array<{ node: string; run: boolean; why: string }>;
 }
 
 export interface RetrievalResult {
@@ -121,6 +129,11 @@ export interface AnalysisStatus {
   error?: string;
   events: ProgressEvent[];
   report?: Report;
-  queryPlan?: { concepts: string[]; symbolKinds: string[]; relationKinds: string[]; terms: string[] };
+  queryPlan?: {
+    concepts: string[];
+    symbolKinds: string[];
+    relationKinds: string[];
+    terms: string[];
+  };
   retrieval?: RetrievalResult[];
 }

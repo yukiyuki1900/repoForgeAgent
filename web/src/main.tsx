@@ -8,6 +8,7 @@ import type {
   AnalysisStatus,
   BrowseResponse,
   DirectoryEntry,
+  ExecutionPlan,
   Finding,
   LocateMatch,
   LocateResponse,
@@ -489,9 +490,9 @@ function App() {
             <Panel
               title="架构解读"
               subtitle="由 LLM 基于确定性事实生成"
-              action={report.narration ? "LLM" : "未启用"}
+              action={report.narration ? "LLM" : "未执行"}
             >
-              <NarrationView narration={report.narration} />
+              <NarrationView narration={report.narration} plan={report.plan} />
             </Panel>
             <Panel title="架构逆向解析" subtitle="目录分层与模块依赖关系" action="Mermaid">
               <MermaidChart source={report.mermaid} />
@@ -797,9 +798,25 @@ function formatDuration(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }
 
-function NarrationView({ narration }: { narration?: Narration }) {
+function NarrationView({
+  narration,
+  plan,
+}: {
+  narration?: Narration;
+  plan?: ExecutionPlan;
+}) {
   if (!narration) {
-    return <Empty text="未配置模型，本次仅输出确定性分析结果" />;
+    // 「本次不需要」和「没配模型」是两回事，混成一句会让人以为工具坏了
+    const skipped = plan?.decisions.find((item) => item.node === "narrate" && !item.run);
+    return (
+      <Empty
+        text={
+          skipped
+            ? `本次按执行计划跳过：${skipped.why}`
+            : "未配置模型，本次仅输出确定性分析结果"
+        }
+      />
+    );
   }
 
   return (

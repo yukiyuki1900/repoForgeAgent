@@ -1,6 +1,17 @@
+import type { ExecutionPlan } from "./plan.js";
+
 export type Language = "ts" | "tsx" | "js" | "jsx" | "vue";
-export type SymbolKind = "function" | "class" | "component" | "interface" | "type" | "variable" | "hook" | "store";
-export type RelationKind = "import" | "export" | "call" | "render" | "type-reference" | "extends" | "implements" | "uses-hook";
+export type SymbolKind =
+  "function" | "class" | "component" | "interface" | "type" | "variable" | "hook" | "store";
+export type RelationKind =
+  | "import"
+  | "export"
+  | "call"
+  | "render"
+  | "type-reference"
+  | "extends"
+  | "implements"
+  | "uses-hook";
 
 export interface FileNode {
   id: string;
@@ -77,5 +88,12 @@ export interface AnalysisResult {
   metrics: { score: number; dimensions: Record<string, number> };
   narration?: Narration;
   mermaid: string;
+  /**
+   * 本次的执行计划。
+   *
+   * 裁剪必须留痕：读报告的人要能看出「这一节为什么没有」，
+   * 而不是以为工具没发现问题。
+   */
+  plan?: ExecutionPlan;
   generatedAt: string;
 }

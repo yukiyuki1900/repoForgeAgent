@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AnalysisResult, Narration } from "./model.js";
+import { INTENT_LABEL, type ExecutionPlan } from "./plan.js";
 
 export async function renderReports(root: string, result: AnalysisResult): Promise<string[]> {
   const dir = path.join(root, ".reposurgeon", "reports");
@@ -39,11 +40,12 @@ function renderMarkdown(result: AnalysisResult): string {
     `- 置信度：${result.stack.confidence}`,
     `- 证据：${result.stack.evidence.join("；") || "无"}`,
     "",
+    ...planSection(result.plan),
     "## 指标",
     `- 总分：${result.metrics.score}`,
     ...Object.entries(result.metrics.dimensions).map(([key, value]) => `- ${key}: ${value}`),
     "",
-    ...narrationSection(result.narration),
+    ...narrationSection(result.narration, result.plan),
     "## Findings",
     ...findings,
     "",
@@ -54,10 +56,40 @@ function renderMarkdown(result: AnalysisResult): string {
   ].join("\n");
 }
 
+/**
+ * 执行计划一节。
+ *
+ * 有了条件路由，报告就可能缺节。不写清楚为什么缺，读的人会把
+ * 「本次没跑」误解成「跑了但没发现问题」——后者是错得更离谱的结论。
+ */
+function planSection(plan?: ExecutionPlan): string[] {
+  if (!plan) return [];
+
+  const skipped = plan.decisions.filter((item) => !item.run);
+
+  return [
+    "## 执行计划",
+    "",
+    `- 识别意图：${INTENT_LABEL[plan.intent]}`,
+    `- 排布理由：${plan.rationale}`,
+    "",
+    ...(skipped.length === 0
+      ? ["全部节点均已执行。", ""]
+      : [
+          "本次**跳过**了以下节点，相关内容不在报告中：",
+          "",
+          "| 节点 | 原因 |",
+          "|---|---|",
+          ...skipped.map((item) => `| \`${item.node}\` | ${item.why} |`),
+          "",
+        ]),
+  ];
+}
+
 /** LLM 缺席时明确写出来，而不是让报告看起来少了一节 */
-function narrationSection(narration?: Narration): string[] {
+function narrationSection(narration?: Narration, plan?: ExecutionPlan): string[] {
   if (!narration) {
-    return ["## 架构解读", "", "_未配置模型，本次仅输出确定性分析结果。_", ""];
+    return ["## 架构解读", "", `_${narrationAbsenceReason(plan)}_`, ""];
   }
 
   return [
@@ -78,6 +110,18 @@ function narrationSection(narration?: Narration): string[] {
       "",
     ]),
   ];
+}
+
+/**
+ * 架构解读缺席的原因。
+ *
+ * 「没配模型」和「这次不需要」是两回事：前者是能力缺失，
+ * 后者是主动取舍。混成一句话会让人以为工具坏了。
+ */
+function narrationAbsenceReason(plan?: ExecutionPlan): string {
+  const decision = plan?.decisions.find((item) => item.node === "narrate");
+  if (decision && !decision.run) return `本次按执行计划跳过：${decision.why}。`;
+  return "未配置模型，本次仅输出确定性分析结果。";
 }
 
 /**
@@ -111,7 +155,19 @@ function renderHtml(result: AnalysisResult): string {
             `<li><b>[${escapeHtml(risk.severity)}] ${escapeHtml(risk.title)}</b> — ${escapeHtml(risk.suggestion)}</li>`,
         )
         .join("")}</ul>`
-    : "<p><i>未配置模型，本次仅输出确定性分析结果。</i></p>";
+    : `<p><i>${escapeHtml(narrationAbsenceReason(result.plan))}</i></p>`;
+
+  const planned = result.plan
+    ? `<p>识别意图：<b>${escapeHtml(INTENT_LABEL[result.plan.intent])}</b> — ${escapeHtml(result.plan.rationale)}</p>` +
+      (result.plan.decisions.some((item) => !item.run)
+        ? `<p>本次跳过：</p><ul>${result.plan.decisions
+            .filter((item) => !item.run)
+            .map(
+              (item) => `<li><code>${escapeHtml(item.node)}</code> — ${escapeHtml(item.why)}</li>`,
+            )
+            .join("")}</ul>`
+        : "<p>全部节点均已执行。</p>")
+    : "";
 
   return `<!doctype html>
 <meta charset="utf-8">
@@ -125,6 +181,7 @@ function renderHtml(result: AnalysisResult): string {
 </style>
 <h1>Repo Surgeon 分析报告</h1>
 <p>技术栈：${escapeHtml(result.stack.framework ?? "未识别")} / ${escapeHtml(result.stack.buildTool ?? "未识别")}</p>
+${planned ? `<h2>执行计划</h2>${planned}` : ""}
 <h2>指标</h2>
 <pre>${escapeHtml(JSON.stringify(result.metrics, null, 2))}</pre>
 <h2>架构解读</h2>
