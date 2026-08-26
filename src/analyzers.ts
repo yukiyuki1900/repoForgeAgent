@@ -45,7 +45,9 @@ export function analyzeCycles(files: FileNode[], edges: RelationEdge[]): Finding
       message: `发现 ${component.length} 个文件组成的循环依赖`,
       files: paths,
       evidence: loop
-        ? [`${loop.map((id) => pathById.get(id) ?? id).join(" → ")} → ${pathById.get(loop[0]) ?? loop[0]}`]
+        ? [
+            `${loop.map((id) => pathById.get(id) ?? id).join(" → ")} → ${pathById.get(loop[0]) ?? loop[0]}`,
+          ]
         : [`强连通分量成员：${paths.join("、")}`],
     });
   };

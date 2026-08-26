@@ -69,7 +69,9 @@ function extractAliases(configPath: string): AliasEntry[] {
   const visit = (node: ts.Node): void => {
     // resolve: { alias: {...} } 或 resolve: { alias: someVariable }
     if (ts.isPropertyAssignment(node) && propertyName(node.name) === "alias") {
-      entries.push(...readAliasValue(deref(node.initializer, variables), configDir, fileName, variables));
+      entries.push(
+        ...readAliasValue(deref(node.initializer, variables), configDir, fileName, variables),
+      );
     }
 
     // resolve: { alias } —— 简写属性，真正的值在同名变量里。

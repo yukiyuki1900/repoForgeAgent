@@ -543,6 +543,11 @@
   min-width: 168px;
 }
 
+/* 控制区与下方结果之间要有呼吸，否则改造 / 追问模式下没有 notice 时会贴在一起 */
+.control-panel {
+  margin-bottom: 18px;
+}
+
 /* 执行进度是整轮运行的主线，独占一行而不是挤在两列网格的左列 */
 .progress-section {
   margin-bottom: 18px;
@@ -566,4 +571,658 @@
 
 .mermaid-fallback {
   margin: 0 21px 21px;
+}
+
+/* ── 模式切换 ───────────────────────────────── */
+
+.mode-tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.mode-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 16px;
+  border: 1px solid rgba(125, 164, 200, 0.32);
+  border-radius: 12px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.mode-tab strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #24384f;
+}
+
+.mode-tab small {
+  font-size: 12px;
+  color: #6b7f96;
+}
+
+.mode-tab:hover {
+  border-color: #7da4c8;
+}
+
+.mode-tab.active {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+
+/*
+ * 改造是唯一会写盘的模式，选中时用警示色而不是和另外两个一样的蓝。
+ * 界面上最危险的操作不该是最不起眼的那个。
+ */
+.mode-tab.writes.active {
+  border-color: #e0a33e;
+  box-shadow: 0 0 0 3px rgba(224, 163, 62, 0.14);
+}
+
+.writes-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(224, 163, 62, 0.16);
+  color: #b5791f;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* ── 模式内的操作区 ───────────────────────────── */
+
+/*
+ * 注意：.control-panel 是 column 布局，此处 align-items 控制的是**水平**方向。
+ * 早先写成 flex-end，把整块内容推到了右边贴边显示。
+ * 追问与改造的内容都应该靠左平铺，和上方的仓库路径对齐。
+ */
+.mode-actions {
+  align-items: stretch;
+}
+
+.mode-actions .field,
+.mode-actions .mode-intro {
+  width: 100%;
+}
+
+.mode-actions .primary-button {
+  align-self: flex-start;
+}
+
+.mode-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.mode-intro strong {
+  display: block;
+  font-size: 14px;
+  color: #24384f;
+  margin-bottom: 4px;
+}
+
+.mode-intro p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #6b7f96;
+}
+
+.mode-intro code {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(16, 35, 63, 0.06);
+  font-size: 12px;
+}
+
+.example-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.example-chips button {
+  padding: 4px 10px;
+  border: 1px solid rgba(125, 164, 200, 0.3);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 12px;
+  color: #4b6076;
+  cursor: pointer;
+}
+
+.example-chips button:hover {
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+
+/* ── 改造计划 ───────────────────────────────── */
+
+.refactor-body {
+  padding: 0 21px 21px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cycle-card {
+  border: 1px solid rgba(125, 164, 200, 0.26);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.cycle-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.cycle-head code {
+  font-size: 12px;
+  color: #4b6076;
+  word-break: break-all;
+}
+
+.edit-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 0;
+  border-top: 1px dashed rgba(125, 164, 200, 0.24);
+  font-size: 13px;
+}
+
+.edit-mark {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.edit-row.ok .edit-mark {
+  color: #2f9e6e;
+}
+
+.edit-row.blocked .edit-mark {
+  color: #a4b3c4;
+}
+
+.edit-row code {
+  font-size: 12px;
+  color: #24384f;
+}
+
+.edit-detail {
+  flex: 1;
+  min-width: 200px;
+  font-size: 12px;
+  color: #6b7f96;
+}
+
+.cycle-verdict {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(125, 164, 200, 0.24);
+  font-size: 13px;
+  color: #24384f;
+}
+
+/* ── 写入确认 ───────────────────────────────── */
+
+.apply-zone {
+  padding: 14px 16px;
+  border: 1px solid rgba(224, 163, 62, 0.4);
+  border-radius: 10px;
+  background: rgba(224, 163, 62, 0.06);
+}
+
+.apply-warning {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #6b5321;
+}
+
+.apply-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.apply-actions button:not(.primary-button) {
+  padding: 8px 16px;
+  border: 1px solid rgba(125, 164, 200, 0.4);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.primary-button.danger {
+  background: #d5533f;
+}
+
+/* ── 验证结果 ───────────────────────────────── */
+
+.verify-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.verify-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  border: 1px solid rgba(125, 164, 200, 0.26);
+  border-radius: 10px;
+}
+
+.verify-item span {
+  font-size: 12px;
+  color: #6b7f96;
+}
+
+.verify-item strong {
+  font-size: 15px;
+  color: #24384f;
+}
+
+.verify-item small {
+  font-size: 12px;
+  color: #6b7f96;
+}
+
+.panel-action.applied {
+  color: #2f9e6e;
+}
+
+.panel-action\.rolled-back,
+.panel-action.rolled-back,
+.panel-action.aborted {
+  color: #d5533f;
+}
+
+.diff-block summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: #4b6076;
+}
+
+.diff-block pre {
+  margin-top: 10px;
+  padding: 14px;
+  border-radius: 8px;
+  background: #10233f;
+  color: #d7e3f2;
+  font-size: 12px;
+  line-height: 1.65;
+  overflow-x: auto;
+}
+
+.skipped-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 追问 ──────────────────────────────────── */
+
+/* 工具调用是回答的证据，用等宽体强调它是机器产出而非叙述 */
+.timeline-row.tool .timeline-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #3b82f6;
+}
+
+.answer-body {
+  width: 100%;
+}
+
+.answer-body p {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.8;
+  color: #24384f;
+}
+
+.answer-body p:empty {
+  display: none;
+}
+
+/* ── Markdown 回答 ─────────────────────────── */
+
+.markdown {
+  font-size: 14px;
+  line-height: 1.8;
+  color: #24384f;
+}
+
+.markdown p {
+  margin: 0 0 12px;
+}
+
+.markdown h3,
+.markdown h4,
+.markdown h5 {
+  margin: 20px 0 10px;
+  font-size: 14px;
+  color: #1f3048;
+}
+
+.markdown h3:first-child,
+.markdown h4:first-child {
+  margin-top: 0;
+}
+
+.markdown ul {
+  margin: 0 0 12px;
+  padding-left: 20px;
+}
+
+.markdown li {
+  margin-bottom: 6px;
+}
+
+.markdown code {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(16, 35, 63, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #2f5f8a;
+}
+
+.markdown table {
+  width: 100%;
+  margin: 0 0 14px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.markdown th,
+.markdown td {
+  padding: 8px 10px;
+  border: 1px solid rgba(125, 164, 200, 0.28);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown th {
+  background: rgba(231, 243, 255, 0.5);
+  font-weight: 600;
+  color: #1f3048;
+}
+
+.markdown td code {
+  white-space: nowrap;
+}
+
+/* ── 追问 / 改造面板的容器 ─────────────────── */
+
+/*
+ * styles.css 里定义的是 .panel-heading，而这两个面板写的是 .panel-head——
+ * 类名对不上，于是标题和内容全部贴着边框。补齐而不是改 JSX：
+ * 这里的结构是「标题 + 右侧计数」，与 .panel-heading 的「标题 + 副标题」不同。
+ */
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 21px 12px;
+}
+
+.panel-head h2 {
+  margin: 0;
+  color: #1f3048;
+  font-size: 14px;
+  letter-spacing: -0.2px;
+}
+
+/* ── 步骤时间线 ──────────────────────────── */
+
+/*
+ * 不复用 .timeline-row：那是三列 grid（圆点 18px / 主体 1fr / 耗时 auto），
+ * 而这里只有「名字 + 结果」两个元素，名字会落进 18px 那一列，
+ * 中文被压成一列竖排。这类布局错位光看代码很难发现，只有跑起来才看得见。
+ */
+.step-timeline {
+  display: flex;
+  flex-direction: column;
+  padding: 0 21px 18px;
+}
+
+.step-row {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 9px 0;
+  border-bottom: 1px solid rgba(125, 164, 200, 0.14);
+}
+
+.step-row:last-child {
+  border-bottom: none;
+}
+
+.step-name {
+  flex: none;
+  min-width: 150px;
+  font-size: 13px;
+  color: #24384f;
+  white-space: nowrap;
+}
+
+/* 工具调用是机器产出，用等宽体区别于「建立索引」这类文案 */
+.step-row.tool .step-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #3b82f6;
+}
+
+.step-detail {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #6b7f96;
+  word-break: break-all;
+}
+
+/* ── 流式回答 ──────────────────────────── */
+
+.answer-body {
+  width: 100%;
+  padding-top: 4px;
+}
+
+/* 光标跟在最后一个字符后面，让「还在写」和「写完了」一眼可分 */
+.streaming-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 15px;
+  margin-left: 3px;
+  vertical-align: text-bottom;
+  background: #3b82f6;
+  animation: caret 1s step-end infinite;
+}
+
+@keyframes caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.answer-pending {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0 10px;
+  color: #6b7f96;
+  font-size: 13px;
+}
+
+/* ── 活动日志 ──────────────────────────────── */
+
+/*
+ * 折叠态是一行灰字，展开才是明细。
+ * 过程信息重要但不该抢占版面——真正要核对的是回答里的具体断言。
+ */
+.activity {
+  margin-bottom: 18px;
+  border: 1px solid rgba(125, 164, 200, 0.26);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.activity-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 16px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.activity-head:hover {
+  background: rgba(231, 243, 255, 0.4);
+}
+
+.activity-time {
+  flex: none;
+  font-size: 13px;
+  color: #4b6076;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 运行中时计时器上色，静止时是普通灰字——一眼看出还在不在跑 */
+.activity.running .activity-time {
+  color: #3b82f6;
+}
+
+.activity-summary {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: #8b9bad;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-caret {
+  flex: none;
+  color: #a4b3c4;
+  font-size: 13px;
+  transition: transform 0.15s;
+}
+
+.activity-caret.open {
+  transform: rotate(180deg);
+}
+
+.activity-detail {
+  padding: 4px 16px 12px;
+  border-top: 1px solid rgba(125, 164, 200, 0.18);
+}
+
+.activity-row {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 7px 0;
+  font-size: 12px;
+}
+
+.activity-name {
+  flex: none;
+  min-width: 150px;
+  color: #24384f;
+  white-space: nowrap;
+}
+
+.activity-row.tool .activity-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #3b82f6;
+}
+
+.activity-note {
+  flex: 1;
+  min-width: 0;
+  color: #6b7f96;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.activity-empty {
+  margin: 8px 0;
+  color: #a4b3c4;
+  font-size: 12px;
+}
+
+/* ── 生成中 ───────────────────────────────── */
+
+.generating {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 12px 16px;
+  border: 1px solid rgba(125, 164, 200, 0.26);
+  border-radius: 10px;
+  background: #fff;
+  color: #4b6076;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.generating-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3b82f6;
+  animation: generating-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes generating-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 正在写的那一段保持纯文本，换行照原样显示 */
+.streaming-pending {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 14px;
+  line-height: 1.8;
+  color: #24384f;
+}
+
+.streaming-pending:empty {
+  margin: 0;
 }

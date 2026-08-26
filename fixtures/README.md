@@ -33,7 +33,7 @@ fixtures/<序号>-<用例名>/
 | `expect.architecture` | 架构聚合：`sourceRoot` 剥离出的公共前缀、`modules` 必须聚出的模块、`minMermaidLines` 图的最小行数 |
 | `expect.narration` | 送给 LLM 前的上下文摘要：`maxEstimatedTokens` 规模上限、`modules` 必须保留的模块聚合、`cycleCuts` 环上建议切点 |
 
-## 四种结果
+## 五种结果
 
 | 结果 | 含义 | 是否阻塞 |
 |---|---|---|

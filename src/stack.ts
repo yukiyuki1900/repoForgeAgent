@@ -46,11 +46,12 @@ export async function detectStack(
     has("pinia") ? "Pinia" : "",
   ].filter(Boolean);
 
-  const router = has("react-router") || has("react-router-dom")
-    ? "React Router"
-    : has("vue-router")
-      ? "Vue Router"
-      : null;
+  const router =
+    has("react-router") || has("react-router-dom")
+      ? "React Router"
+      : has("vue-router")
+        ? "Vue Router"
+        : null;
 
   const languages = [
     ...new Set(

@@ -14,13 +14,14 @@
     "analyze": "tsx src/cli.ts analyze",
     "refactor": "tsx src/cli.ts refactor",
     "refactor:apply": "tsx src/cli.ts refactor --apply",
+    "ask": "tsx src/cli.ts ask",
     "api": "tsx src/api.ts",
     "web:dev": "pnpm --dir web dev",
     "web:build": "pnpm --dir web build",
     "eval": "tsx scripts/eval.ts",
-    "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\" \"web/src/**/*.{ts,tsx}\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\" \"web/src/**/*.{ts,tsx}\"",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\" \"web/src/**/*.{ts,tsx}\" \"web/tests/**/*.tsx\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\" \"web/src/**/*.{ts,tsx}\" \"web/tests/**/*.tsx\"",
+    "test": "node --import tsx --test tests/*.test.ts && pnpm --dir web test"
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.0.8",

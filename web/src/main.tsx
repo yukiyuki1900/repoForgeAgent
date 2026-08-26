@@ -2,10 +2,11 @@ import { useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import mermaid from "mermaid";
+import { AskPanel } from "./AskPanel";
+import { RefactorPanel } from "./RefactorPanel";
 import { demoEvents, demoReport, demoRetrieval } from "./demo";
+import { runTask, type TaskEvent, type TaskStatus } from "./task";
 import type {
-  AnalysisAccepted,
-  AnalysisStatus,
   BrowseResponse,
   DirectoryEntry,
   ExecutionPlan,
@@ -130,7 +131,27 @@ const DIMENSION_LABELS: Record<string, string> = {
   typing: "类型质量",
 };
 
+interface AnalyzeResult {
+  report?: Report;
+  retrieval?: RetrievalResult[];
+}
+
+type Mode = "analyze" | "refactor" | "ask";
+
+/**
+ * 三种模式对应三种风险等级，UI 上必须让人一眼看出来。
+ *
+ * analyze 与 ask 都是只读的，refactor 会写盘——所以它的标签带一个记号，
+ * 而不是和另外两个长得一模一样。界面上最危险的操作不该是最不起眼的那个。
+ */
+const MODES: Array<{ key: Mode; label: string; hint: string; writes?: boolean }> = [
+  { key: "analyze", label: "分析", hint: "全量审计与架构逆向" },
+  { key: "ask", label: "追问", hint: "模型自主调用工具查证" },
+  { key: "refactor", label: "改造", hint: "import type 拆环", writes: true },
+];
+
 function App() {
+  const [mode, setMode] = useState<Mode>("analyze");
   const [root, setRoot] = useState("/workspace/demo-shop");
   const [query, setQuery] = useState("");
   const [report, setReport] = useState<Report | undefined>(demoReport);
@@ -143,6 +164,30 @@ function App() {
   const [locating, setLocating] = useState(false);
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [notice, setNotice] = useState("当前展示 Demo 数据，可连接本地 API 分析真实仓库");
+
+  /**
+   * 选定仓库路径。
+   *
+   * 一旦用户指定了真实仓库，就必须把 Demo 数据清掉——否则页面上会同时出现
+   * 「已选择 /path/to/real-project」和一份属于虚构项目的评分、架构图、风险列表。
+   * 这是最误导的一种状态：所有数字看起来都很真实，但和用户选的仓库毫无关系。
+   *
+   * 清空之后下方只留一句「点击开始分析」，宁可空着也不给假数据。
+   */
+  const selectRoot = (next: string, message?: string) => {
+    if (next === root) return;
+
+    setRoot(next);
+    setMatches([]);
+
+    // 换了仓库，旧结果就不再属于它——不管那是 Demo 数据还是上一个仓库的真实报告
+    setReport(undefined);
+    setResults([]);
+    setEvents([]);
+    // 从此进入真实模式：再失败也只报错，不拿假数据顶上
+    setIsDemo(false);
+    setNotice(message ?? "已选择仓库，点击「开始分析」运行");
+  };
 
   // 路径变化时查一下该仓库是否已有分析记录（含命令行跑出来的）
   useEffect(() => {
@@ -197,11 +242,9 @@ function App() {
 
       // 判据足够强就直接采用，不必让用户在一堆同名目录里再挑一次
       if (found.length > 0 && confident) {
-        setRoot(found[0].path);
-        setNotice(
-          found[0].exact
-            ? `已选择 ${found[0].path}`
-            : `已选择 ${found[0].path}（按目录特征匹配）`,
+        selectRoot(
+          found[0].path,
+          found[0].exact ? `已选择 ${found[0].path}` : `已选择 ${found[0].path}（按目录特征匹配）`,
         );
         return;
       }
@@ -256,11 +299,23 @@ function App() {
     setEvents(demoEvents);
   };
 
-  const applyStatus = (status: AnalysisStatus) => {
+  /**
+   * 后端把三种模式的事件统一成了 TaskEvent；分析模式的事件全部来自工作流节点，
+   * 转成既有的 ProgressEvent 即可复用时间线组件，信息不丢。
+   */
+  const toProgress = (event: TaskEvent): ProgressEvent => ({
+    node: event.label,
+    phase: event.phase ?? "end",
+    at: event.at,
+    durationMs: event.durationMs,
+    detail: event.detail,
+  });
+
+  const applyStatus = (status: TaskStatus<AnalyzeResult>) => {
     setIsDemo(false);
-    setReport(status.report);
-    setResults(status.retrieval ?? []);
-    if (status.events.length) setEvents(status.events);
+    setReport(status.result?.report);
+    setResults(status.result?.retrieval ?? []);
+    if (status.events.length) setEvents(status.events.map(toProgress));
     setNotice(
       status.status === "failed"
         ? `分析失败：${status.error ?? "未知错误"}`
@@ -278,46 +333,20 @@ function App() {
     setEvents([]);
     setNotice("提交分析任务…");
 
-    let accepted: AnalysisAccepted;
     try {
-      const response = await fetch("/analysis", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ root, query }),
+      const status = await runTask<AnalyzeResult>("/analysis", { root, query }, (event) => {
+        setNotice("LangGraph 正在分析仓库…");
+        setEvents((previous) => [...previous, toProgress(event)]);
       });
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({}) as { error?: string });
-        throw new Error(detail.error ?? `API ${response.status}`);
-      }
-      accepted = (await response.json()) as AnalysisAccepted;
+      applyStatus(status);
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
+      const reason = describeError(error);
       fallback(
         isDemo
           ? `提交失败（${reason}），已切换为 Demo 数据。启动 pnpm api 后可分析真实仓库`
           : `提交失败：${reason}`,
       );
-      return;
     }
-
-    setNotice("LangGraph 正在分析仓库…");
-    subscribeProgress(accepted, {
-      onEvent: (event) => setEvents((previous) => [...previous, event]),
-      onFinish: async () => {
-        try {
-          const response = await fetch(accepted.statusUrl);
-          if (!response.ok) throw new Error(`状态查询失败 ${response.status}`);
-          applyStatus((await response.json()) as AnalysisStatus);
-        } catch (error) {
-          fallback(`分析已结束，但拉取结果失败：${describeError(error)}`);
-        }
-      },
-      // 后端支持断线重放，因此这里只提示，不丢弃已经拿到的真实进度
-      onError: () => {
-        setLoading(false);
-        setNotice("进度连接中断，分析可能仍在后台运行，可刷新后重新查询");
-      },
-    });
   };
 
   const riskCount = useMemo(
@@ -359,16 +388,30 @@ function App() {
           </div>
         </section>
 
+        <nav className="mode-tabs">
+          {MODES.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={`mode-tab ${mode === item.key ? "active" : ""} ${item.writes ? "writes" : ""}`}
+              onClick={() => setMode(item.key)}
+            >
+              <strong>
+                {item.label}
+                {item.writes && <span className="writes-badge">写盘</span>}
+              </strong>
+              <small>{item.hint}</small>
+            </button>
+          ))}
+        </nav>
+
         <section className="control-panel">
           <div className="field">
             <label>仓库路径</label>
             <div className="path-input">
               <input
                 value={root}
-                onChange={(event) => {
-                  setRoot(event.target.value);
-                  setMatches([]);
-                }}
+                onChange={(event) => selectRoot(event.target.value)}
                 placeholder="/path/to/your-project"
               />
               <button
@@ -383,18 +426,14 @@ function App() {
 
             {matches.length > 0 && (
               <div className="locate-matches">
-                <span className="locate-hint">
-                  按目录特征匹配度排序，请选择你刚才选中的那个：
-                </span>
+                <span className="locate-hint">按目录特征匹配度排序，请选择你刚才选中的那个：</span>
                 {matches.map((match) => (
                   <button
                     key={match.path}
                     type="button"
                     className="locate-match"
                     onClick={() => {
-                      setRoot(match.path);
-                      setMatches([]);
-                      setNotice(`已选择 ${match.path}`);
+                      selectRoot(match.path, `已选择 ${match.path}`);
                     }}
                   >
                     <code>{match.path}</code>
@@ -406,141 +445,163 @@ function App() {
               </div>
             )}
           </div>
-          <div className="field query-field">
-            <label>
-              分析问题 <span>可选</span>
-            </label>
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="找所有处理用户登录的组件"
-            />
-          </div>
-          <button className="primary-button" onClick={startAnalysis} disabled={loading}>
-            {loading ? "分析中…" : "开始分析 →"}
-          </button>
-        </section>
-
-        <p className={`notice ${isDemo ? "demo" : ""}`}>
-          <span>{isDemo ? "⚠" : "✦"}</span>
-          {isDemo && <b className="demo-badge">DEMO 数据</b>}
-          {notice}
-        </p>
-
-        {history.length > 0 && (
-          <p className="notice history-notice">
-            <span>◷</span>
-            该仓库有 {history.length} 次历史分析记录，最近一次{" "}
-            {new Date(history[0].generatedAt).toLocaleString()}
-            {history[0].score !== null && ` · 评分 ${history[0].score}`}
-            {` · ${history[0].files} 个文件`}
-            <button type="button" className="link-button" onClick={loadLatest}>
-              加载最近一次结果
-            </button>
-          </p>
-        )}
-
-        <section className="progress-section">
-          <Panel title="执行进度" subtitle="LangGraph 节点级事件流" action={progressLabel(events)}>
-            <ProgressTimeline events={events} running={loading} />
-          </Panel>
-        </section>
-
-        {!report && (
-          <p className="notice">
-            <span>✦</span> 本次没有产出报告，上方进度中可以看到中断的节点
-          </p>
-        )}
-
-        {report && (
-        <>
-        <section className="summary-grid">
-          <Metric
-            label="维护性评分"
-            value={report.metrics.score}
-            suffix="/100"
-            tone="blue"
-            detail="综合复杂度、耦合度与类型质量"
-          />
-          <Metric
-            label="技术栈置信度"
-            value={Math.round(report.stack.confidence * 100)}
-            suffix="%"
-            tone="green"
-            detail={`${report.stack.framework ?? "Unknown"} · ${report.stack.buildTool ?? "Unknown"}`}
-          />
-          <Metric
-            label="风险发现"
-            value={riskCount}
-            suffix="项"
-            tone="orange"
-            detail={`${report.files.length} 个文件已扫描`}
-          />
-          <Metric
-            label="关系节点"
-            value={report.symbols.length}
-            suffix="个"
-            tone="purple"
-            detail={`${report.edges.length} 条关系边`}
-          />
-        </section>
-
-        <section className="content-grid">
-          <div className="main-column">
-            <Panel
-              title="架构解读"
-              subtitle="由 LLM 基于确定性事实生成"
-              action={report.narration ? "LLM" : "未执行"}
-            >
-              <NarrationView narration={report.narration} plan={report.plan} />
-            </Panel>
-            <Panel title="架构逆向解析" subtitle="目录分层与模块依赖关系" action="Mermaid">
-              <MermaidChart source={report.mermaid} />
-            </Panel>
-            <Panel
-              title="语义检索结果"
-              subtitle={query ? `Query · ${query}` : "未提供检索问题"}
-              action={`${results.length} 个结果`}
-            >
-              <div className="result-list">
-                {results.length ? (
-                  results.map((item, index) => (
-                    <SearchResult key={`${item.path}-${index}`} item={item} />
-                  ))
-                ) : (
-                  <Empty text="没有找到相关代码" />
-                )}
+          {mode === "analyze" && (
+            <>
+              <div className="field query-field">
+                <label>
+                  分析问题 <span>可选</span>
+                </label>
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="找所有处理用户登录的组件"
+                />
               </div>
-            </Panel>
-          </div>
-
-          <aside className="side-column">
-            <StackCard report={report} />
-            <Panel title="风险发现" subtitle="按优先级排序">
-              <div className="finding-list">
-                {report.findings.length ? (
-                  report.findings.map((item, index) => (
-                    <FindingRow key={`${item.rule}-${index}`} finding={item} />
-                  ))
-                ) : (
-                  <Empty text="暂无风险发现" />
-                )}
-              </div>
-            </Panel>
-            <Panel title="健康度维度">
-              <div className="health-list">
-                {Object.keys(report.metrics.dimensions).length ? (
-                  Object.entries(report.metrics.dimensions).map(([key, value]) => (
-                    <HealthBar key={key} label={DIMENSION_LABELS[key] ?? key} value={value} />
-                  ))
-                ) : (
-                  <Empty text="没有可分析的源码文件" />
-                )}
-              </div>
-            </Panel>
-          </aside>
+              <button className="primary-button" onClick={startAnalysis} disabled={loading}>
+                {loading ? "分析中…" : "开始分析 →"}
+              </button>
+            </>
+          )}
         </section>
-        </>
+
+        {mode === "refactor" && <RefactorPanel key={root} root={root} />}
+        {mode === "ask" && <AskPanel key={root} root={root} />}
+
+        {mode === "analyze" && (
+          <>
+            <p className={`notice ${isDemo ? "demo" : ""}`}>
+              <span>{isDemo ? "⚠" : "✦"}</span>
+              {isDemo && <b className="demo-badge">DEMO 数据</b>}
+              {notice}
+            </p>
+
+            {history.length > 0 && (
+              <p className="notice history-notice">
+                <span>◷</span>
+                该仓库有 {history.length} 次历史分析记录，最近一次{" "}
+                {new Date(history[0].generatedAt).toLocaleString()}
+                {history[0].score !== null && ` · 评分 ${history[0].score}`}
+                {` · ${history[0].files} 个文件`}
+                <button type="button" className="link-button" onClick={loadLatest}>
+                  加载最近一次结果
+                </button>
+              </p>
+            )}
+
+            <section className="progress-section">
+              <Panel
+                title="执行进度"
+                subtitle="LangGraph 节点级事件流"
+                action={progressLabel(events)}
+              >
+                <ProgressTimeline events={events} running={loading} />
+              </Panel>
+            </section>
+
+            {!report && (
+              <p className="notice">
+                <span>✦</span>{" "}
+                {events.length === 0
+                  ? "选好仓库后点击「开始分析」，这里会显示评分、架构图与风险清单"
+                  : "本次没有产出报告，上方进度中可以看到中断的节点"}
+              </p>
+            )}
+
+            {report && (
+              <>
+                <section className="summary-grid">
+                  <Metric
+                    label="维护性评分"
+                    value={report.metrics.score}
+                    suffix="/100"
+                    tone="blue"
+                    detail="综合复杂度、耦合度与类型质量"
+                  />
+                  <Metric
+                    label="技术栈置信度"
+                    value={Math.round(report.stack.confidence * 100)}
+                    suffix="%"
+                    tone="green"
+                    detail={`${report.stack.framework ?? "Unknown"} · ${report.stack.buildTool ?? "Unknown"}`}
+                  />
+                  <Metric
+                    label="风险发现"
+                    value={riskCount}
+                    suffix="项"
+                    tone="orange"
+                    detail={`${report.files.length} 个文件已扫描`}
+                  />
+                  <Metric
+                    label="关系节点"
+                    value={report.symbols.length}
+                    suffix="个"
+                    tone="purple"
+                    detail={`${report.edges.length} 条关系边`}
+                  />
+                </section>
+
+                <section className="content-grid">
+                  <div className="main-column">
+                    <Panel
+                      title="架构解读"
+                      subtitle="由 LLM 基于确定性事实生成"
+                      action={report.narration ? "LLM" : "未执行"}
+                    >
+                      <NarrationView narration={report.narration} plan={report.plan} />
+                    </Panel>
+                    <Panel title="架构逆向解析" subtitle="目录分层与模块依赖关系" action="Mermaid">
+                      <MermaidChart source={report.mermaid} />
+                    </Panel>
+                    <Panel
+                      title="语义检索结果"
+                      subtitle={query ? `Query · ${query}` : "未提供检索问题"}
+                      action={`${results.length} 个结果`}
+                    >
+                      <div className="result-list">
+                        {results.length ? (
+                          results.map((item, index) => (
+                            <SearchResult key={`${item.path}-${index}`} item={item} />
+                          ))
+                        ) : (
+                          <Empty text="没有找到相关代码" />
+                        )}
+                      </div>
+                    </Panel>
+                  </div>
+
+                  <aside className="side-column">
+                    <StackCard report={report} />
+                    <Panel title="风险发现" subtitle="按优先级排序">
+                      <div className="finding-list">
+                        {report.findings.length ? (
+                          report.findings.map((item, index) => (
+                            <FindingRow key={`${item.rule}-${index}`} finding={item} />
+                          ))
+                        ) : (
+                          <Empty text="暂无风险发现" />
+                        )}
+                      </div>
+                    </Panel>
+                    <Panel title="健康度维度">
+                      <div className="health-list">
+                        {Object.keys(report.metrics.dimensions).length ? (
+                          Object.entries(report.metrics.dimensions).map(([key, value]) => (
+                            <HealthBar
+                              key={key}
+                              label={DIMENSION_LABELS[key] ?? key}
+                              value={value}
+                            />
+                          ))
+                        ) : (
+                          <Empty text="没有可分析的源码文件" />
+                        )}
+                      </div>
+                    </Panel>
+                  </aside>
+                </section>
+              </>
+            )}
+          </>
         )}
       </main>
 
@@ -554,7 +615,7 @@ function App() {
           initialPath={root}
           onCancel={() => setPickerOpen(false)}
           onSelect={(selected) => {
-            setRoot(selected);
+            selectRoot(selected, `已选择 ${selected}`);
             setPickerOpen(false);
           }}
         />
@@ -645,7 +706,9 @@ function DirectoryPicker({
         <div className="picker-list">
           {error && <div className="picker-error">{error}</div>}
           {pending && !error && <Empty text="读取中…" />}
-          {!pending && !error && listing?.entries.length === 0 && <Empty text="该目录下没有子目录" />}
+          {!pending && !error && listing?.entries.length === 0 && (
+            <Empty text="该目录下没有子目录" />
+          )}
           {!pending &&
             !error &&
             listing?.entries.map((entry) => (
@@ -686,39 +749,6 @@ function DirectoryRow({ entry, onOpen }: { entry: DirectoryEntry; onOpen: () => 
       {entry.analyzed && <span className="picker-tag analyzed">已分析</span>}
     </button>
   );
-}
-
-interface ProgressHandlers {
-  onEvent: (event: ProgressEvent) => void;
-  onFinish: () => void;
-  onError: () => void;
-}
-
-/** 订阅 SSE 进度流；后端会先回放已发生的事件，因此接入时机不影响完整性 */
-function subscribeProgress(accepted: AnalysisAccepted, handlers: ProgressHandlers): void {
-  const source = new EventSource(accepted.eventsUrl);
-  let settled = false;
-
-  const finish = () => {
-    if (settled) return;
-    settled = true;
-    source.close();
-    handlers.onFinish();
-  };
-
-  source.addEventListener("progress", (message) => {
-    handlers.onEvent(JSON.parse((message as MessageEvent).data) as ProgressEvent);
-  });
-
-  // 服务端无论任务是否已结束，都统一以 done 收尾并关闭流
-  source.addEventListener("done", finish);
-
-  source.onerror = () => {
-    if (settled) return;
-    settled = true;
-    source.close();
-    handlers.onError();
-  };
 }
 
 interface TimelineStep {
@@ -764,7 +794,7 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function elapsedOf(status: AnalysisStatus): string {
+function elapsedOf(status: { startedAt: string; finishedAt?: string }): string {
   if (!status.finishedAt) return "—";
   const ms = new Date(status.finishedAt).getTime() - new Date(status.startedAt).getTime();
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
@@ -798,22 +828,14 @@ function formatDuration(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }
 
-function NarrationView({
-  narration,
-  plan,
-}: {
-  narration?: Narration;
-  plan?: ExecutionPlan;
-}) {
+function NarrationView({ narration, plan }: { narration?: Narration; plan?: ExecutionPlan }) {
   if (!narration) {
     // 「本次不需要」和「没配模型」是两回事，混成一句会让人以为工具坏了
     const skipped = plan?.decisions.find((item) => item.node === "narrate" && !item.run);
     return (
       <Empty
         text={
-          skipped
-            ? `本次按执行计划跳过：${skipped.why}`
-            : "未配置模型，本次仅输出确定性分析结果"
+          skipped ? `本次按执行计划跳过：${skipped.why}` : "未配置模型，本次仅输出确定性分析结果"
         }
       />
     );

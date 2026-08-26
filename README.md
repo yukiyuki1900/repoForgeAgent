@@ -1,37 +1,42 @@
-# 🔍 RepoForgeAgent
+<div align="center">
 
-面向前端仓库的代码分析 Agent。用 AST 建立语义图，用 LangGraph 编排分析流水线，LLM 只负责解读——**事实由确定性代码算出**。
+# RepoForgeAgent
 
-以下是一个 319 文件真实 Vue 仓库上的实测输出：
+**面向前端仓库的代码分析与改造 Agent。**
 
-```
-$ pnpm analyze ./your-project
+事实由确定性代码算出，LLM 只负责解释——以及在只读工具集里自己决定查什么。
 
-  ✓ loadRepository           11ms
-  ✓ scanFiles                90ms  319 个文件
-  ✓ detectStack               2ms  Vue + Vite
-  ✓ plan                      0ms  意图：全量审计 · 跳过 retrieveContext
-  ✓ parseSemantic          4737ms  2694 个符号 · 936 条关系边
-  ✓ quality                   6ms  维护性评分 56
-  ✓ frontend                  7ms  18 个前端问题
-  ✓ analyzeArchitecture      11ms  14 个模块
-  ✓ dependency               11ms  1 处循环依赖
-  ✓ narrate               18156ms  架构解读已生成
-  ✓ render                   23ms  报告已输出
-```
+<sub>TypeScript · LangGraph · ts-morph · Vercel AI SDK · React</sub>
 
-## 核心能力
+</div>
 
-- **执行计划** — 先识别意图再决定跑哪些节点，条件 fan-out 动态裁剪分支；每一次裁剪都带理由并写进报告
-- **语义解析** — ts-morph 建立符号与依赖图，模块解析交给 TypeScript 编译器；自动读取 tsconfig `paths` 与 vite / webpack / rspack / nuxt 的 `resolve.alias`
-- **Vue / React 双栈** — Vue SFC 经 `@vue/compiler-sfc` 抽出 script 走同一条 AST 路径；render 关系边分别取自 JSX 与 template
-- **依赖分析** — Tarjan 循环依赖检测、环上最优切点（按引用次数最少选取）、模块级依赖图；`import type` 记为类型边，不计入运行时环
-- **改造闭环** — 识别环上仅用于类型的导入，改成 `import type` 并写回仓库；改动前后各做一次全量类型检查（判据是不新增错误），再重扫仓库重跑 Tarjan 与预测对账，任一不符自动 `git checkout` 回滚
-- **前端专项** — Hooks 疑似条件调用、lint / type 绕过、大文件、维护性评分
-- **架构逆向** — 剥离公共前缀后聚合模块、分层推断、Mermaid 架构图
-- **语义检索** — 自然语言查询，结构化召回 + 关键词匹配，中文概念映射到代码标识符
-- **LLM 解读** — 架构叙述与技术债优先级排序；未配置模型时自动降级为纯确定性分析
-- **多种交付** — CLI 实时进度、异步 API + SSE 进度流、React 看板、Markdown / HTML / JSON 报告
+---
+
+## 为什么做这个
+
+在一个陌生的前端仓库里，三个问题最常见，也最难靠通读代码回答：
+
+1. **这个仓库的结构是什么样的？** 目录名会骗人，`utils` 里可能塞着业务逻辑。
+2. **改这个文件会影响到谁？** 靠全局搜索找引用，会漏掉 alias 导入和动态 `import()`。
+3. **这些循环依赖能修吗？** 知道有环容易，判断哪一条边能安全断开很难。
+
+市面上的 AI 代码工具大多把整个仓库塞进模型上下文，让它「看着办」。这条路在几百个文件的仓库上就会失真：模型会编造不存在的文件、把目录名当成职责、给出无法验证的建议。
+
+这个项目走另一条路——**能算出来的绝不问模型**：
+
+- 依赖图用 TypeScript 编译器解析，循环依赖用 Tarjan 算，影响面靠数入边
+- 模型只做两件确定性代码做不了的事：把事实翻译成人话，以及在一组只读工具里自主查证
+- 每一次改造都必须能被编译器证伪，验证不过就自动回滚
+
+## 三种模式
+
+| 模式 | 做什么 | 谁做决策 | 风险 |
+|---|---|---|---|
+| **分析** `analyze` | 全量审计：依赖图、循环依赖、架构逆向、维护性评分 | 确定性代码 + LLM 解读 | 只读 |
+| **追问** `ask` | 把语义图开放成 8 个只读工具，模型自己查证后回答 | 模型自主 | 只读 |
+| **改造** `refactor` | 用 `import type` 打破循环依赖，写入并验证 | 确定性代码 | **写盘** |
+
+三种模式都有命令行与 Web 看板两套入口。
 
 ## 快速开始
 
@@ -39,104 +44,94 @@ $ pnpm analyze ./your-project
 pnpm install
 ```
 
-| 命令 | 说明 |
-|---|---|
-| `pnpm analyze ./your-project` | 全量审计 |
-| `pnpm analyze ./your-project --query "有循环依赖吗"` | 定向提问，只跑与答案相关的节点 |
-| `pnpm analyze ./your-project --full` | 忽略意图裁剪，跑满全部节点 |
-| `pnpm analyze ./your-project --json` | 机器可读输出 |
-| `pnpm refactor ./your-project` | 改造计划，只读 |
-| `pnpm refactor ./your-project --apply` | 写入 + 验证 + 失败回滚 |
-| `pnpm dev` | Web 看板（API + 前端） |
-| `pnpm stop` | 终止残留进程 |
+```bash
+# 分析：全量审计
+pnpm analyze ./your-project
 
-分析过程**只读扫描目标仓库，不执行目标项目的任何脚本**。产物写入目标仓库的 `.reposurgeon/`：
+# 分析：带问题，只跑与答案相关的节点
+pnpm analyze ./your-project --query "有循环依赖吗"
+
+# 追问：模型自主调用工具查证
+pnpm ask ./your-project "哪个模块被依赖得最多，它做了哪些事"
+
+# 改造：先看计划
+pnpm refactor ./your-project
+
+# 改造：写入 + 验证 + 失败自动回滚
+pnpm refactor ./your-project --apply
+
+# Web 看板（三种模式都有界面）
+pnpm dev
+```
+
+分析过程**只读扫描目标仓库，不执行目标项目的任何脚本**。产物写入 `<your-project>/.reposurgeon/`：
 
 ```
-<your-project>/.reposurgeon/
-├── reports/              report.html / report.md / report.json
+.reposurgeon/
+├── reports/              report.html · report.md · report.json
 ├── refactors/<时间戳>/    refactor.diff · verify-report.md
 └── index.db              SQLite 索引（可选，供看板加载历史结果）
 ```
 
-CLI 与看板是独立进程，通过这个 SQLite 索引打通——看板里填入同一路径即可加载命令行跑出的结果。索引依赖原生模块 `better-sqlite3`，不可用时会告警并跳过，报告照常输出。
+## 配置
 
-## 执行计划
+LLM 相关能力需要配置模型，其余功能不配也能完整运行——只是没有架构解读，`ask` 不可用。
 
-同一个仓库，问法不同，跑的节点就不同：
-
-```
-$ pnpm analyze ./your-project --query "有循环依赖吗"
-
-  ✓ plan   0ms  意图：依赖与循环 · 跳过 analyzeArchitecture、frontend、narrate
+```bash
+cp .env.example .env      # 用编辑器填入 key
 ```
 
-为什么值得这么做——看上面那次全量运行的耗时分解：
+| 环境变量 | 说明 |
+|---|---|
+| `OPENAI_API_KEY` | 启用架构解读、查询计划与 `ask`（后者强制需要） |
+| `OPENAI_BASE_URL` | OpenAI 协议兼容网关（DeepSeek、智谱等） |
+| `REPOSURGEON_MODEL` | 默认 `gpt-4o-mini` |
+| `REPOSURGEON_API_PORT` | API 端口，默认 `3100` |
+| `REPOSURGEON_WEB_PORT` | 看板端口，默认 `5173` |
 
-| 节点 | 耗时 | 占比 |
-|---|---|---|
-| `narrate` | 18156ms | **79%** |
-| `parseSemantic` | 4737ms | 21% |
-| 其余 8 个节点合计 | ~160ms | <1% |
+`.env.local` 覆盖 `.env`；显式 `export` 的优先级最高。**不要把 key 写在命令行里**——zsh 交互模式默认不把 `#` 当注释，追加说明会被当成参数，而且命令行会进 shell 历史。
 
-只想知道「有没有循环依赖」时，等 23 秒里有 18 秒花在生成一段没人要的架构叙述上。裁掉之后约 **4.9 秒**（按上表分解推算），token 消耗归零。
+## 技术选型与理由
 
-裁剪规则写在 [plan.ts](src/plan.ts)：
+**TypeScript Compiler API（经 ts-morph）** — 模块解析直接交给编译器，因此 tsconfig `paths`、`baseUrl`、index 解析、扩展名补全全部免费获得。早期用正则实现时，一个使用 alias 的仓库依赖图会大面积残缺——两个文件明明互相 import，却一条边都扫不出来，循环依赖检测形同虚设。
 
-| 意图 | analyzeArchitecture | frontend | narrate |
-|---|:---:|:---:|:---:|
-| 全量审计（默认） | ✓ | ✓ | ✓ |
-| 依赖与循环 | — | — | — |
-| 架构与分层 | ✓ | — | ✓ |
-| 质量与技术债 | — | ✓ | — |
-| 语义检索 | — | — | — |
+**Tarjan 强连通分量** — 循环依赖是图论问题，问模型既慢又不准还不可复现。递归实现在万级文件的长依赖链上会爆栈，所以用了显式栈的迭代版。
 
-几条刻意的取舍：
+**LangGraph** — 用它只为两件事：四个分析器的并行 fan-out / fan-in 与状态归并，以及节点级的进度事件。加上 `plan` 节点后又多了一条：条件路由动态裁剪分支。
 
-- **`dependency` 与 `quality` 恒在** —— 报告的 `metrics` 与循环依赖是必填内容，跳过它们等于产出一份残缺却看不出残缺的报告；何况两者合计 17ms，省下来没有意义
-- **不为了「像 Agent」而路由** —— 四个确定性分析器加起来 35ms，路由它们是自欺欺人。真正值得决策的只有 LLM 节点
-- **决策用规则不用模型** —— 意图分类是低维、可枚举、要求可复现的判断，交给 LLM 只换来延迟、不确定性和「幻觉出不存在的节点名」的风险。`createAnalysisGraph({ planner })` 留了注入点，架构上并不锁死
-- **裁剪必须留痕** —— 每个被跳过的节点都带理由，写进 CLI 输出和报告的「执行计划」一节。否则读报告的人会把「本次没跑」误解成「跑了但没发现问题」
+**Vercel AI SDK** — `generateObject` 拿结构化输出（架构解读、查询计划），`streamText` + `tools` 跑 `ask` 的工具调用循环。换模型只改环境变量。
 
-## 改造闭环
+**@vue/compiler-sfc（可选依赖）** — `.vue` 抽出 script 块走同一条 AST 路径。做成可选：只分析 React 项目的人不该被 Vue 编译器卡住。
 
-只做**能被编译器证伪**的变换。`import type` 是语义等价的机械变换：判定靠 TypeScript 的引用分析，改造是一次 AST 调用，效果可以用「重跑 Tarjan」直接验证——全程不需要模型生成任何代码。
+**better-sqlite3（可选）** — 让 Web 看板能加载命令行跑出的历史结果。原生模块不可用时告警并跳过，报告照常输出——它是加速层，不是主产物。
+
+## 架构
 
 ```
-$ pnpm refactor ./your-project --apply
-
-  ✓ 扫描 2 个文件
-  ✓ 检测到 1 处循环依赖
-
-  · 前置检查通过：2 个目标文件均已被 git 跟踪且无未提交改动
-  · 类型基线：0 条已有错误
-  · 类型检查：0 条错误，新增 0 条（3554ms）
-  · 已写入 2 个文件
-  · 重新扫描仓库，验证环是否真的消失…
-  · 循环依赖：1 → 0（预测 0）
-
-✓ 改造已应用
-  类型检查 基线 0 条错误 → 改后 0 条，新增 0 条
-  环验证   1 → 0（预测 0，一致）
+                    ┌──────────── 命令行 ────────────┐
+                    │  analyze · ask · refactor      │
+                    └───────────────┬────────────────┘
+                                    │
+  scanner ──► graph ──► ┌───────────┴───────────┐
+  文件扫描    AST 语义图  │  workflow（LangGraph） │  ◄── Web 看板
+                        │  tasks（SSE 进度流）    │      React + Vite
+                        └───────────┬───────────┘
+                                    │
+              ┌─────────────────────┼─────────────────────┐
+              ▼                     ▼                     ▼
+        analyzers             tools + ask            refactor + apply
+     Tarjan / 指标 / 前端      8 个只读工具            import type 拆环
+                              模型自主循环            双层验证 + 回滚
 ```
 
-两道关卡缺一不可：
-
-- **类型**：改动前后各做一次全量 pre-emit 检查，判据是**不新增**错误。真实仓库的 `tsc` 极少是干净的，要求零错误等于永不执行
-- **结构**：写入后重扫仓库、重建依赖图、重跑 Tarjan，实测环数必须与 dry-run 的预测完全一致。「能编译」不等于「环真的断了」
-
-任一不符就 `git checkout --` 回滚，diff 仍会留档供人工复盘。写入前要求目标文件已被 git 跟踪且无未提交改动——没有可靠回滚手段就不动用户的代码。
-
-## 工作流
+分析流水线的节点编排：
 
 ```
 START → loadRepository → scanFiles → detectStack → plan     ← 决策点
                                                      │
-                                                     ▼
                                               parseSemantic
                                                      │
                        ┌─────────────┬───────────────┼───────────────┐
-                       ▼             ▼               ▼               ▼
               analyzeArchitecture  dependency     quality        frontend   ← 条件 fan-out
                   （可裁剪）        （恒在）       （恒在）        （可裁剪）
                        └─────────────┴───────────────┴───────────────┘
@@ -148,61 +143,97 @@ START → loadRepository → scanFiles → detectStack → plan     ← 决策�
                                                   render → END
 ```
 
-## 配置
+## 执行计划：先量再决定路由什么
 
-全部可选，不配置也能完整运行——只是没有架构解读与 LLM 查询计划。
+给流水线加决策节点最容易滑向表演——每个节点前挂个 `if`，看起来很 Agent，实际一秒没省。所以先量成本分布，再决定路由什么：**LLM 节点是压倒性的耗时大头，AST 解析次之，四个确定性分析器的开销可以忽略。**
 
-```bash
-cp .env.example .env
+结论很直白：路由那几个分析器是自欺欺人，真正值得决策的只有 LLM 节点。
+
+```
+$ pnpm analyze ./your-project --query "有循环依赖吗"
+
+  ✓ plan   意图：依赖与循环 · 跳过 analyzeArchitecture、frontend、narrate
 ```
 
-复制后用编辑器填入 key 即可，不必每次 `export`。**不要把 key 写在命令行里**——zsh 交互模式默认不把 `#` 当注释，追加说明会被当成参数；而且命令行会进入 shell 历史。
+只想知道「有没有循环依赖」时，架构叙述既不是答案的一部分，又恰好是最贵的一步。裁剪规则见 [plan.ts](src/plan.ts)：
 
-| 环境变量 | 说明 |
+| 意图 | analyzeArchitecture | frontend | narrate |
+|---|:---:|:---:|:---:|
+| 全量审计（默认） | ✓ | ✓ | ✓ |
+| 依赖与循环 | — | — | — |
+| 架构与分层 | ✓ | — | ✓ |
+| 质量与技术债 | — | ✓ | — |
+| 语义检索 | — | — | — |
+
+`dependency` 与 `quality` 恒在：它们的产出是报告必填内容，跳过等于产出一份残缺却看不出残缺的报告。裁剪必须留痕——每个被跳过的节点都带理由写进报告，否则读的人会把「本次没跑」误解成「跑了但没发现问题」。
+
+## 追问：模型编排自己
+
+项目其余部分是**我们编排模型**，`ask` 相反：
+
+```
+$ pnpm ask ./your-project "哪个模块被依赖得最多，它做了哪些事"
+
+  ✓ 索引已建立
+
+  → listHotspots      按入边排序，最高 src/utils/index.ts
+  → getFileSummary    src/utils/index.ts · 入边远高于出边
+  → getDependents     src/utils/index.ts ← 依赖方覆盖各业务页面
+  → readSource        src/utils/index.ts:1-20
+```
+
+每条调用都带上了**查的是哪个文件**——三次 `getDependents` 如果只显示数量，读的人无法核对模型说的是哪一个。工具调用与回答都是流式的，界面上不折叠、不隐藏——**一个看不到推理路径的 Agent 回答，和一段编出来的话没有区别。**
+
+| 工具 | 用途 |
 |---|---|
-| `OPENAI_API_KEY` | 启用 LLM 架构解读与查询计划 |
-| `OPENAI_BASE_URL` | OpenAI 协议兼容网关（DeepSeek、智谱等） |
-| `REPOSURGEON_MODEL` | 默认 `gpt-4o-mini` |
-| `REPOSURGEON_API_PORT` | API 端口，默认 `3100` |
-| `REPOSURGEON_WEB_PORT` | 看板端口，默认 `5173` |
+| `searchFiles` | 按路径关键词定位文件 |
+| `getFileSummary` | 行数、复杂度、导出符号、入边出边数 |
+| `getDependents` / `getDependencies` | 谁 import 了它 / 它 import 了谁 |
+| `findSymbol` | 按名字查符号定义位置 |
+| `listHotspots` | 按被依赖次数排名 |
+| `listCycles` | 循环依赖，可按文件过滤 |
+| `readSource` | 读源码片段，单次上限 120 行 |
 
-`.env.local` 会覆盖 `.env`；显式 `export` 的环境变量优先级最高。
+四条工具设计上的取舍：
 
-单次全量分析约消耗 2000 输入 + 1400 输出 token，用国内兼容网关跑百次量级的成本在个位数元。定向提问会跳过 `narrate`，token 消耗为零。
+- **只暴露索引，不暴露文件系统** — 路径不在索引里就查不到。天然挡掉路径穿越，不需要写 `..` 校验，因为根本没有一条通往 fs 的路
+- **查不到时给候选** — 模型常写出 `utils/request.ts` 这类差不多但不对的路径。返回 not found 它只会换个名字继续猜
+- **截断必须写进返回值** — 静默截断会让模型把「前 40 条」当成全部，然后给出一个自信的错误结论
+- **越界夹紧而非报错** — 模型对行数的估计经常偏大，报错是在惩罚一个无害的猜测
 
-未配置模型时 `plan` 会直接不走 `narrate` 这条边，而不是进入节点后再降级。
-
-`@vue/compiler-sfc` 是可选依赖，仅在仓库存在 `.vue` 文件时需要。
-
-## 目录结构
+## 改造：只做能被编译器证伪的变换
 
 ```
-src/
-├── workflow.ts      LangGraph 编排、State 通道、条件路由、节点级进度事件
-├── plan.ts          意图识别与节点裁剪规则
-├── scanner.ts       文件扫描、hash、行数、圈复杂度
-├── stack.ts         技术栈识别
-├── graph.ts         ts-morph 语义解析：符号、依赖边、render 边
-├── alias.ts         构建配置里的 resolve.alias 静态提取
-├── analyzers.ts     Tarjan 循环依赖、前端专项检查、维护性指标
-├── architecture.ts  模块聚合、分层推断、组件拓扑
-├── narrate.ts       上下文压缩、环切点计算、LLM 架构解读
-├── retrieval.ts     查询计划与混合检索
-├── locate.ts        按目录特征反查绝对路径
-├── refactor.ts      import type 拆环的检测与模拟
-├── apply.ts         写入、两层验证、失败回滚与产物留档
-├── report.ts        Markdown / HTML / JSON 报告
-├── storage.ts       SQLite 索引与状态快照（原生模块不可用时自动降级）
-├── llm.ts           模型解析与结构化输出
-├── env.ts           .env 加载
-├── api.ts           异步任务 API + SSE 进度流
-└── cli.ts           命令行入口
+$ pnpm refactor ./your-project --apply
 
-web/                 React + Vite 分析看板
-fixtures/            回归评估用例
-tests/               端到端用例：条件路由与改造闭环（会真实写盘）
-scripts/             评估执行器与本地启动脚本
+  · 前置检查通过：目标文件均已被 git 跟踪且无未提交改动
+  · 类型基线：记录已有错误
+  · 类型检查：新增 0 条错误
+  · 已写入目标文件
+  · 重新扫描仓库，验证环是否真的消失…
+  · 循环依赖：实测与预测一致
+
+✓ 改造已应用
 ```
+
+循环依赖的一般性修复（提取共享模块、依赖倒置）是架构决策，只能靠模型生成代码，既有幻觉风险也无法证明行为不变。而 `import type` 是**语义等价的机械变换**：判定靠 TypeScript 的引用分析，改造是一次 AST 调用，效果可以用「重跑 Tarjan」直接验证。
+
+两道关卡缺一不可：
+
+- **类型** — 改动前后各做一次全量 pre-emit 检查，判据是**不新增**错误。真实仓库的 `tsc` 极少干净，要求零错误等于永不执行
+- **结构** — 写入后重扫仓库、重跑 Tarjan，实测环数必须与预测完全一致。「能编译」不等于「环真的断了」
+
+任一不符就 `git checkout --` 回滚，diff 仍留档供人工复盘。
+
+### 为什么 `ask` 敢交出控制权，`--apply` 不敢
+
+判据不是任务难不难，而是**这一步做错了，代价是什么**：
+
+| | `ask` | `refactor --apply` |
+|---|---|---|
+| 谁做决策 | 模型自主 | 确定性代码 |
+| 最坏情况 | 查了一堆无关的东西 | 改坏能跑的代码 |
+| 如何兜底 | 只读 + 轮次上限 + 答案带行号可核对 | 类型检查 + 环数对账 + git 回滚 |
 
 ## 开发
 
@@ -211,11 +242,41 @@ pnpm eval          # 回归评估：校验分析器在固定输入上产出的�
 pnpm test          # 端到端：图真的能跑通、改动真的写盘、验证真的会拦
 pnpm build         # 类型检查与编译
 pnpm format        # 代码格式化
+pnpm stop          # 终止残留的开发进程
+```
+
+评估分两层，混在一起就什么都测不了：`pnpm eval` 校验**判断准不准**（含专门保护误报率的用例）；`pnpm test` 校验**动作对不对**（建真实 git 仓库写盘、桩模型跑 tool-calling 循环、前后端字段契约）。
+
+```
+src/
+├── workflow.ts      LangGraph 编排、State 通道、条件路由
+├── plan.ts          意图识别与节点裁剪规则
+├── scanner.ts       文件扫描、hash、行数、圈复杂度
+├── graph.ts         ts-morph 语义解析：符号、依赖边、render 边
+├── alias.ts         构建配置里的 resolve.alias 静态提取
+├── analyzers.ts     Tarjan 循环依赖、前端专项检查、维护性指标
+├── architecture.ts  模块聚合、分层推断、组件拓扑
+├── narrate.ts       上下文压缩、环切点计算、LLM 架构解读
+├── retrieval.ts     查询计划与混合检索
+├── tools.ts         暴露给模型的只读工具集
+├── ask.ts           tool-calling 循环、流式输出、轮次控制
+├── refactor.ts      import type 拆环的检测与模拟
+├── apply.ts         写入、两层验证、失败回滚与产物留档
+├── tasks.ts         三种模式共用的任务状态机与 SSE
+├── jobs.ts          三种模式各自的任务体
+├── api.ts           HTTP 路由、目录浏览与历史记录
+└── cli.ts           命令行入口
+
+web/                 React + Vite 看板
+fixtures/            回归评估用例
+tests/               端到端与契约测试
 ```
 
 ## 文档
 
-- [设计决策](docs/DESIGN.md) — 为什么这么做，以及不这么做的代价
-- [已知限制](docs/LIMITATIONS.md) — 能力边界与路线图
-- [故障排查](docs/TROUBLESHOOTING.md) — 依赖图缺边、改动不生效、端口占用
-- [回归评估](fixtures/README.md) — 用例结构与四种结果语义
+| 文档 | 内容 |
+|---|---|
+| [docs/DESIGN.md](docs/DESIGN.md) | 设计取舍，以及不这么做的代价 |
+| [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | 能力边界与路线图 |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 依赖图缺边、改动不生效、端口占用 |
+| [fixtures/README.md](fixtures/README.md) | 用例结构与五种结果语义 |

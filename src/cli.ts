@@ -3,7 +3,10 @@ import path from "node:path";
 import { Command } from "commander";
 import { analyzeCycles } from "./analyzers.js";
 import { applyTypeOnlyRefactor, formatApplyResult } from "./apply.js";
+import { askCodebase, formatAskResult } from "./ask.js";
 import { loadEnv } from "./env.js";
+import { resolveModel } from "./llm.js";
+import { buildIndex } from "./tools.js";
 import { extractGraph } from "./graph.js";
 import { formatPlan, planTypeOnlyRefactor } from "./refactor.js";
 import { scanFiles } from "./scanner.js";
@@ -18,6 +21,11 @@ interface AnalyzeOptions {
 interface RefactorOptions {
   dryRun?: boolean;
   apply?: boolean;
+}
+
+interface AskOptions {
+  maxSteps?: string;
+  json?: boolean;
 }
 
 // 必须在读取任何配置之前加载
@@ -143,6 +151,61 @@ program
     if (result.status === "rolled-back" || result.status === "aborted") {
       process.exitCode = 1;
     }
+  });
+
+program
+  .command("ask")
+  .argument("<directory>", "本地仓库目录")
+  .argument("<question>", "关于这个仓库的问题")
+  .option("--max-steps <n>", "工具调用轮次上限", "8")
+  .option("--json", "仅输出 JSON")
+  .action(async (directory: string, question: string, options: AskOptions) => {
+    const model = resolveModel();
+    if (!model) {
+      throw new Error(
+        "ask 需要模型：确定性分析可以没有 LLM，但「自己决定查什么」不行。\n" +
+          "请在 .env 里配置 OPENAI_API_KEY（兼容网关再配 OPENAI_BASE_URL）",
+      );
+    }
+
+    let streamed = false;
+    const index = await buildIndex(directory);
+    if (!options.json) {
+      console.log(
+        `  ✓ 索引 ${index.files.length} 个文件 · ${index.symbols.length} 个符号 · ${index.edges.length} 条边\n`,
+      );
+    }
+
+    const result = await askCodebase({
+      model,
+      index,
+      question,
+      maxSteps: Number(options.maxSteps) || 8,
+      // 工具调用实时打印：模型的推理路径本身就是答案可信度的一部分
+      onToolCall: options.json
+        ? undefined
+        : (call) => {
+            if (streamed) process.stdout.write("\n");
+            streamed = false;
+            console.log(`  → ${call.name.padEnd(18)} ${call.summary}`);
+          },
+      // 回答边生成边打印，不让终端干等十几秒
+      onTextDelta: options.json
+        ? undefined
+        : (delta) => {
+            if (!streamed) {
+              process.stdout.write(`\n${"─".repeat(60)}\n`);
+              streamed = true;
+            }
+            process.stdout.write(delta);
+          },
+    });
+
+    if (streamed) process.stdout.write("\n");
+    console.log(options.json ? JSON.stringify(result, null, 2) : formatAskResult(result, streamed));
+
+    // 撞上限说明没查完，不该被脚本当成成功
+    if (result.exhausted) process.exitCode = 1;
   });
 
 program.parseAsync().catch((error) => {

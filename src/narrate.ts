@@ -1,7 +1,14 @@
 import { generateObject } from "ai";
 import { z } from "zod";
 import type { ArchitectureReport } from "./architecture.js";
-import type { FileNode, Finding, Narration, RelationEdge, StackResult, SymbolNode } from "./model.js";
+import type {
+  FileNode,
+  Finding,
+  Narration,
+  RelationEdge,
+  StackResult,
+  SymbolNode,
+} from "./model.js";
 
 /**
  * 架构叙述节点的上下文构建与模型调用。
@@ -45,7 +52,13 @@ export interface NarrationContext {
     outbound: number;
   }>;
   layers: Array<{ name: string; dependsOn: string[] }>;
-  hotspots: Array<{ path: string; lineCount: number; complexity: number; inbound: number; outbound: number }>;
+  hotspots: Array<{
+    path: string;
+    lineCount: number;
+    complexity: number;
+    inbound: number;
+    outbound: number;
+  }>;
   cycles: Array<{
     files: string[];
     /** 环的真实规模，files 可能只是其中一部分 */
@@ -90,7 +103,9 @@ export function buildNarrationContext(input: {
     .sort((a, b) => b.complexity + b.inbound * 3 - (a.complexity + a.inbound * 3));
 
   const allCycles = findings.filter((finding) => finding.rule === "import-cycle");
-  const groupedFindings = groupFindings(findings.filter((finding) => finding.rule !== "import-cycle"));
+  const groupedFindings = groupFindings(
+    findings.filter((finding) => finding.rule !== "import-cycle"),
+  );
 
   return {
     stack: {
@@ -129,7 +144,10 @@ export function buildNarrationContext(input: {
 }
 
 function groupFindings(findings: Finding[]): NarrationContext["findings"] {
-  const grouped = new Map<string, { rule: string; severity: string; count: number; samples: string[] }>();
+  const grouped = new Map<
+    string,
+    { rule: string; severity: string; count: number; samples: string[] }
+  >();
 
   for (const finding of findings) {
     const entry = grouped.get(finding.rule) ?? {
@@ -213,7 +231,10 @@ const SYSTEM_PROMPT = [
   "4. 建议必须具体到可执行，避免「加强代码质量」这类空话。",
 ].join("\n");
 
-export async function narrateWithModel(model: Model, context: NarrationContext): Promise<Narration> {
+export async function narrateWithModel(
+  model: Model,
+  context: NarrationContext,
+): Promise<Narration> {
   const { object } = await generateObject({
     model,
     schema: narrationSchema,

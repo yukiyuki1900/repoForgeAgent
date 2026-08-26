@@ -110,30 +110,3 @@ export interface RunSummary {
   score: number | null;
   framework: string | null;
 }
-
-/** POST /analysis 的 202 响应：任务已受理，进度走 SSE */
-export interface AnalysisAccepted {
-  runId: string;
-  status: string;
-  statusUrl: string;
-  eventsUrl: string;
-}
-
-/** GET /analysis/:runId 的响应 */
-export interface AnalysisStatus {
-  runId: string;
-  status: "running" | "completed" | "failed";
-  currentStep: string;
-  startedAt: string;
-  finishedAt?: string;
-  error?: string;
-  events: ProgressEvent[];
-  report?: Report;
-  queryPlan?: {
-    concepts: string[];
-    symbolKinds: string[];
-    relationKinds: string[];
-    terms: string[];
-  };
-  retrieval?: RetrievalResult[];
-}

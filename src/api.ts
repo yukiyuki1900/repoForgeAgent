@@ -6,13 +6,13 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { PassThrough } from "node:stream";
-import type { AnalysisResult } from "./model.js";
-import type { QueryPlan, RetrievalResult } from "./retrieval.js";
 import { loadEnv } from "./env.js";
+import { runAskJob, runRefactorJob } from "./jobs.js";
+import { resolveModel } from "./llm.js";
 import { locateDirectories, type Fingerprint } from "./locate.js";
 import { readLatestRun, readRunSummaries } from "./storage.js";
-import { runAnalysis, type ProgressEvent } from "./workflow.js";
+import { attachStream, getTask, startTask, toResponse, type TaskRecord } from "./tasks.js";
+import { runAnalysis } from "./workflow.js";
 
 // 必须在读取任何配置之前加载
 loadEnv();
@@ -29,36 +29,8 @@ const API_PORT = Number(process.env.REPOSURGEON_API_PORT ?? DEFAULT_PORT);
 /** 已完成的 run 保留上限，超出后按开始时间淘汰最旧的 */
 const MAX_RETAINED_RUNS = 20;
 
-type RunStatus = "running" | "completed" | "failed";
-
-interface RunResult {
-  report?: AnalysisResult;
-  queryPlan?: QueryPlan;
-  retrieval: RetrievalResult[];
-}
-
-interface RunRecord {
-  runId: string;
-  root: string;
-  query?: string;
-  status: RunStatus;
-  currentStep: string;
-  startedAt: string;
-  finishedAt?: string;
-  /** 已发生的事件，供后接入的订阅者回放，避免错过前面的进度 */
-  events: ProgressEvent[];
-  subscribers: Set<PassThrough>;
-  /**
-   * 只保留最终产物，不持有整个 WorkflowState——后者含有 contents（全仓源码），
-   * 几次分析就足以把常驻内存推到 GB 级。
-   */
-  result?: RunResult;
-  error?: string;
-}
-
 const app = new Koa();
 const router = new Router();
-const runs = new Map<string, RunRecord>();
 
 app.use(async (ctx, next) => {
   ctx.set("Access-Control-Allow-Origin", WEB_ORIGIN);
@@ -72,73 +44,118 @@ app.use(async (ctx, next) => {
 });
 
 /**
- * 提交分析任务：立刻返回 runId，分析在后台执行。
+ * 三种模式共用一套提交协议：立刻返回 taskId，进度走 SSE。
  *
- * 此前是同步阻塞实现，稍大的仓库必然请求超时。
+ * 路由分开是因为参数与风险都不同——尤其 refactor 会写用户的代码，
+ * 不能和只读的分析共用一个入口，否则参数少传一个就可能改盘。
  */
 router.post("/analysis", (ctx) => {
-  const body = (ctx.request.body ?? {}) as { root?: string; query?: string };
-  if (!body.root) {
-    ctx.status = 400;
-    ctx.body = { error: "root is required" };
-    return;
-  }
+  const body = (ctx.request.body ?? {}) as { root?: string; query?: string; full?: boolean };
+  const root = requireRoot(ctx, body.root);
+  if (!root) return;
 
-  // 不校验的话，不存在的路径会一路跑到底并产出一份「0 文件」的空报告，
-  // 看起来像分析成功了
-  if (!isDirectory(body.root)) {
-    ctx.status = 400;
-    ctx.body = { error: `root is not an existing directory: ${body.root}` };
-    return;
-  }
+  const record = startTask({
+    kind: "analyze",
+    root,
+    run: async ({ emit }) => {
+      const state = await runAnalysis(root, {
+        query: body.query,
+        full: body.full,
+        runId: randomUUID(),
+        onProgress: (event) =>
+          emit({
+            channel: "node",
+            label: event.node,
+            phase: event.phase,
+            durationMs: event.durationMs,
+            detail: event.detail,
+          }),
+      });
+      return {
+        report: state.report,
+        queryPlan: state.queryPlan,
+        retrieval: state.retrieval,
+        plan: state.executionPlan,
+      };
+    },
+  });
 
-  const runId = randomUUID();
-  const record: RunRecord = {
-    runId,
-    root: body.root,
-    query: body.query,
-    status: "running",
-    currentStep: "start",
-    startedAt: new Date().toISOString(),
-    events: [],
-    subscribers: new Set(),
-  };
-  runs.set(runId, record);
-  evictOldRuns();
-
-  // 不 await：请求立即返回，进度通过 SSE 推送
-  void execute(record);
-
-  ctx.status = 202;
-  ctx.body = {
-    runId,
-    status: record.status,
-    statusUrl: `/analysis/${runId}`,
-    eventsUrl: `/analysis/${runId}/events`,
-  };
+  accepted(ctx, record);
 });
 
-router.get("/analysis/:runId", (ctx) => {
-  const record = runs.get(ctx.params.runId);
+/**
+ * 改造。
+ *
+ * `apply` 默认 false，必须显式传 true 才写盘——这个默认值是安全边界的一部分：
+ * 少传一个参数的后果应该是「什么都没发生」，而不是「代码被改了」。
+ * 前端也走两步：先看计划，再确认应用。
+ */
+router.post("/refactor", (ctx) => {
+  const body = (ctx.request.body ?? {}) as { root?: string; apply?: boolean };
+  const root = requireRoot(ctx, body.root);
+  if (!root) return;
+
+  const shouldApply = body.apply === true;
+
+  const record = startTask({
+    kind: "refactor",
+    root,
+    meta: { apply: shouldApply },
+    run: ({ emit }) => runRefactorJob(root, shouldApply, emit),
+  });
+
+  accepted(ctx, record);
+});
+
+/** 追问：模型自主决定调用哪些只读工具 */
+router.post("/ask", (ctx) => {
+  const body = (ctx.request.body ?? {}) as { root?: string; question?: string; maxSteps?: number };
+  const root = requireRoot(ctx, body.root);
+  if (!root) return;
+
+  const question = (body.question ?? "").trim();
+  if (!question) {
+    ctx.status = 400;
+    ctx.body = { error: "question is required" };
+    return;
+  }
+
+  const model = resolveModel();
+  if (!model) {
+    ctx.status = 400;
+    ctx.body = {
+      error:
+        "ask 需要模型：确定性分析可以没有 LLM，但「自己决定查什么」不行。请在 .env 配置 OPENAI_API_KEY",
+    };
+    return;
+  }
+
+  const record = startTask({
+    kind: "ask",
+    root,
+    meta: { question },
+    run: ({ emit, emitText }) =>
+      runAskJob(root, question, model, emit, Number(body.maxSteps) || undefined, emitText),
+  });
+
+  accepted(ctx, record);
+});
+
+router.get("/tasks/:taskId", (ctx) => {
+  const record = getTask(ctx.params.taskId);
   if (!record) {
     ctx.status = 404;
-    ctx.body = { error: "analysis run not found" };
+    ctx.body = { error: "task not found" };
     return;
   }
   ctx.body = toResponse(record);
 });
 
-/**
- * 节点级进度流。
- *
- * 连接建立时先回放已发生的事件，再订阅后续事件；无论任务是否已经结束，
- * 结束时都统一以 `done` 事件收尾并关闭流，两条路径的协议完全一致。
- */
-router.get("/analysis/:runId/events", (ctx) => {
-  const record = runs.get(ctx.params.runId);
+router.get("/tasks/:taskId/events", (ctx) => {
+  const record = getTask(ctx.params.taskId);
   if (!record) {
     ctx.status = 404;
-    ctx.body = { error: "analysis run not found" };
+    ctx.body = { error: "task not found" };
     return;
   }
 
@@ -150,24 +167,9 @@ router.get("/analysis/:runId/events", (ctx) => {
   });
   ctx.status = 200;
 
-  const stream = new PassThrough();
+  const stream = attachStream(record);
   ctx.body = stream;
-
-  for (const event of record.events) {
-    stream.write(formatEvent("progress", event));
-  }
-
-  if (record.status !== "running") {
-    stream.write(formatEvent("done", summaryOf(record)));
-    stream.end();
-    return;
-  }
-
-  record.subscribers.add(stream);
-
-  const cleanup = () => record.subscribers.delete(stream);
-  stream.on("close", cleanup);
-  ctx.req.on("close", cleanup);
+  ctx.req.on("close", () => stream.destroy());
 });
 
 /** 目录浏览时跳过的噪音目录，避免用户在一堆无关目录里翻找 */
@@ -190,7 +192,8 @@ const BROWSE_SKIP = new Set([
  * 只返回目录名，不返回任何文件内容。
  */
 router.get("/fs/browse", (ctx) => {
-  const requested = typeof ctx.query.path === "string" && ctx.query.path ? ctx.query.path : homedir();
+  const requested =
+    typeof ctx.query.path === "string" && ctx.query.path ? ctx.query.path : homedir();
   const current = path.resolve(requested);
 
   if (!isDirectory(current)) {
@@ -295,77 +298,36 @@ router.get("/repo/runs/latest", (ctx) => {
   ctx.body = { root: path.resolve(root), report };
 });
 
-async function execute(record: RunRecord): Promise<void> {
-  try {
-    const state = await runAnalysis(record.root, {
-      query: record.query,
-      runId: record.runId,
-      onProgress: (event) => publish(record, event),
-    });
-    record.result = {
-      report: state.report,
-      queryPlan: state.queryPlan,
-      retrieval: state.retrieval,
-    };
-    record.status = "completed";
-  } catch (error) {
-    record.status = "failed";
-    record.error = error instanceof Error ? error.message : String(error);
-  } finally {
-    record.finishedAt = new Date().toISOString();
-    finishSubscribers(record);
-  }
-}
-
-function publish(record: RunRecord, event: ProgressEvent): void {
-  record.events.push(event);
-  if (event.phase === "start") record.currentStep = event.node;
-
-  const payload = formatEvent("progress", event);
-  for (const stream of record.subscribers) {
-    stream.write(payload);
-  }
-}
-
-/** 终态统一走 done 事件并关闭流，否则标准 SSE 客户端会一直挂着 */
-function finishSubscribers(record: RunRecord): void {
-  const payload = formatEvent("done", summaryOf(record));
-  for (const stream of record.subscribers) {
-    stream.write(payload);
-    stream.end();
-  }
-  record.subscribers.clear();
-}
-
-/** done 事件只带轻量摘要，完整报告由客户端按需拉 statusUrl */
-function summaryOf(record: RunRecord) {
-  return {
-    runId: record.runId,
+/** 三种任务的受理响应格式一致，客户端只认 statusUrl / eventsUrl */
+function accepted(ctx: Koa.Context, record: TaskRecord): void {
+  ctx.status = 202;
+  ctx.body = {
+    taskId: record.taskId,
+    kind: record.kind,
     status: record.status,
-    currentStep: record.currentStep,
-    startedAt: record.startedAt,
-    finishedAt: record.finishedAt,
-    error: record.error,
+    statusUrl: `/tasks/${record.taskId}`,
+    eventsUrl: `/tasks/${record.taskId}/events`,
   };
 }
 
-function toResponse(record: RunRecord) {
-  return {
-    runId: record.runId,
-    status: record.status,
-    currentStep: record.currentStep,
-    startedAt: record.startedAt,
-    finishedAt: record.finishedAt,
-    error: record.error,
-    events: record.events,
-    report: record.result?.report,
-    queryPlan: record.result?.queryPlan,
-    retrieval: record.result?.retrieval ?? [],
-  };
-}
-
-function formatEvent(name: string, payload: unknown): string {
-  return `event: ${name}\ndata: ${JSON.stringify(payload)}\n\n`;
+/**
+ * 校验 root 并返回绝对路径。
+ *
+ * 不校验的话，不存在的路径会一路跑到底并产出一份「0 文件」的空报告，
+ * 看起来像成功了。
+ */
+function requireRoot(ctx: Koa.Context, root?: string): string | undefined {
+  if (!root) {
+    ctx.status = 400;
+    ctx.body = { error: "root is required" };
+    return undefined;
+  }
+  if (!isDirectory(root)) {
+    ctx.status = 400;
+    ctx.body = { error: `root is not an existing directory: ${root}` };
+    return undefined;
+  }
+  return path.resolve(root);
 }
 
 function isDirectory(target: string): boolean {
@@ -373,16 +335,6 @@ function isDirectory(target: string): boolean {
     return statSync(target).isDirectory();
   } catch {
     return false;
-  }
-}
-
-function evictOldRuns(): void {
-  const finished = [...runs.values()]
-    .filter((record) => record.status !== "running")
-    .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
-
-  for (const record of finished.slice(0, Math.max(0, finished.length - MAX_RETAINED_RUNS))) {
-    runs.delete(record.runId);
   }
 }
 
