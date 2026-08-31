@@ -206,3 +206,29 @@
 - `.timeline-row` 是 `grid-template-columns: 18px 1fr auto` 的三列网格，而追问面板只给了两个子元素，名字落进 18px 那一列——中文被压成一列竖排
 
 类型系统对 `className` 字符串一无所知，测试也不会去断言视觉。这类问题的唯一解法就是**真的把界面跑起来看一眼**。这和项目里另一条经验是同一件事：三次「代码写完了但从没运行过」的事故，都是靠端到端跑一遍才发现的。
+
+## 20. 同一套工具，两个协议出口
+
+`ask` 与 MCP Server 面向的是两拨模型：前者是我们自己编排的循环，后者是别人的编辑器。但它们用的**必须是同一份工具实现**。
+
+所以 `mcp.ts` 不重新定义工具，而是从 `tools.ts` 的 tool 对象上取 `description` 与 zod schema，转成 MCP 的注册格式：
+
+```ts
+server.registerTool(name, {
+  description: definition.description,
+  inputSchema: definition.parameters.shape,   // ZodObject → ZodRawShape
+  annotations: { readOnlyHint: true, openWorldHint: false },
+}, handler)
+```
+
+复制一份会怎样很容易预见：某天在 `ask` 这边修了「路径写错时给候选」，MCP 那边还在返回 not found。**两个出口给出不同的事实，比少一个出口糟糕得多**——这和前后端字段契约那条是同一个道理。
+
+顺带的好处是 `readOnlyHint` 可以如实声明：八个工具确实一个都不写盘，客户端据此决定要不要弹确认框。改造能力**没有**接进 MCP，因为那是会写盘的操作，不该藏在一个标着只读的协议出口后面。
+
+## 21. stdout 是协议通道
+
+接 stdio transport 最容易踩的坑：项目里 `graph.ts` 会打印 alias 解析统计、`storage.ts` 会打印原生模块降级告警——任何一行 `console.log` 混进 stdout，客户端解析 JSON-RPC 就会失败，而且报错完全看不出根因。
+
+所以建立传输之前先把 `console.log` / `info` / `warn` 改道到 stderr。日志不丢，只是换条道走。
+
+这条也决定了测试怎么写：MCP 的测试**故意挑了会打印 alias 日志的 fixture**（`11-vite-alias`）。如果重定向失效，握手就直接失败——**能连上本身就是一条断言**，比事后 grep stdout 可靠得多。
