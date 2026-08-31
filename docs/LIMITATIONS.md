@@ -59,6 +59,15 @@
 | 只暴露只读工具 | 改造能力刻意没有接入——写盘操作不该藏在一个标着 `readOnlyHint` 的协议出口后面 |
 | 仅 stdio 传输 | 没有实现 SSE / HTTP transport，因此只能本机使用 |
 
+## Skill
+
+| 限制 | 说明 |
+|---|---|
+| Windows 上符号链接会退化 | 客户端目录是指向 `.agents/` 的符号链接；Windows clone 需要 `core.symlinks=true` 且有相应权限，否则会变成内容为路径字符串的普通文件，Skill 静默不加载 |
+| 装在项目级只对本仓库生效 | 要在被分析的项目里用，需按 README 链到 `~/.claude/skills/` 或 `~/.cursor/skills/` |
+| 只挂 MCP 时第 4 步不完整 | 「这条边能否改成 `import type`」依赖 refactor 的引用分析，没有暴露成 MCP 工具；手册里已标注此时应如实说明查不了，而不是读源码猜 |
+| 手册内容不参与类型检查 | `tests/skill.test.ts` 能验证工具名、命令名、文档路径与链接完整性，但判断标准写得对不对仍然只能靠人读 |
+
 ## 检索与恢复
 
 | 限制 | 说明 |

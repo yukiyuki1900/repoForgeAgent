@@ -36,7 +36,7 @@
 | **追问** `ask` | 把语义图开放成 8 个只读工具，模型自己查证后回答 | 模型自主 | 只读 |
 | **改造** `refactor` | 用 `import type` 打破循环依赖，写入并验证 | 确定性代码 | **写盘** |
 
-三种模式都有命令行与 Web 看板两套入口。同一套工具还可以通过 [MCP](#mcp-server) 挂给 Claude Code / Cursor。
+三种模式都有命令行与 Web 看板两套入口。同一套工具还可以通过 [MCP](#mcp-server) 挂给 Claude Code / Cursor，配套的 [Skill](#skill) 说明该怎么用。
 
 ## 快速开始
 
@@ -180,6 +180,39 @@ $ pnpm ask ./your-project "哪个模块被依赖得最多，它做了哪些事"
 
 改造能力**没有**接入 MCP——写盘操作不该藏在一个标着只读的协议出口后面。
 
+## Skill
+
+MCP 给的是**能力**，Skill 给的是**流程**。挂上 MCP 之后模型拿到 8 个工具，但先查什么、查到之后怎么判断，仍然没人告诉它。
+
+[.agents/skills/frontend-repo-checkup](.agents/skills/frontend-repo-checkup/SKILL.md) 把「一个有经验的人会怎么用这套工具」写成了操作手册：先建立全局事实、再定位热点、检查分层是否倒置、判断循环依赖能否自动修、最后产出带行号的行动清单。里面同时写了判断标准与反模式——比如「行数很少但入边极高 = 桶文件」，比如不要产出「建议解耦」这种没有落点的结论。
+
+### 跨客户端
+
+[Agent Skills](https://agentskills.io) 是开放标准，Claude Code、Cursor、VS Code、Codex 都能加载。规范定义的是 skill 目录的结构，**发现路径由各客户端自己定**，所以真身放在中立目录，客户端入口用相对符号链接指过去：
+
+```
+.agents/skills/frontend-repo-checkup/SKILL.md   ← 真身
+.claude/skills/frontend-repo-checkup  ─┐
+.cursor/skills/frontend-repo-checkup  ─┴─► 符号链接
+```
+
+一份内容，改一处两边同时生效。想在**任意项目**里用（而不只是在本仓库里），链到用户级目录：
+
+```bash
+ln -s "$PWD/.agents/skills/frontend-repo-checkup" ~/.claude/skills/
+ln -s "$PWD/.agents/skills/frontend-repo-checkup" ~/.cursor/skills/
+```
+
+`tests/skill.test.ts` 会验证链接没断、三个路径同源、手册里引用的工具与命令真实存在——手册不会被编译，写错一个工具名只有等模型照着做失败了才知道。
+
+### 三个出口
+
+```
+tools.ts  ──►  ask        自己的 agent loop
+          ──►  mcp.ts     别人的编辑器，标准协议
+          ──►  SKILL.md   怎么用才对，标准格式
+```
+
 ## 改造
 
 ```
@@ -296,6 +329,7 @@ src/
 web/                 React + Vite 看板
 fixtures/            回归评估用例
 tests/               端到端与契约测试
+.claude/skills/      前端仓库体检的操作手册
 ```
 
 ## 文档
