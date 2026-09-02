@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import mermaid from "mermaid";
 import { AskPanel } from "./AskPanel";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { RefactorPanel } from "./RefactorPanel";
 import { demoEvents, demoReport, demoRetrieval } from "./demo";
 import { runTask, type TaskEvent, type TaskStatus } from "./task";
@@ -334,9 +335,13 @@ function App() {
     setNotice("提交分析任务…");
 
     try {
-      const status = await runTask<AnalyzeResult>("/analysis", { root, query }, (event) => {
-        setNotice("LangGraph 正在分析仓库…");
-        setEvents((previous) => [...previous, toProgress(event)]);
+      const status = await runTask<AnalyzeResult>({
+        url: "/analysis",
+        body: { root, query },
+        onEvent: (event) => {
+          setNotice("LangGraph 正在分析仓库…");
+          setEvents((previous) => [...previous, toProgress(event)]);
+        },
       });
       applyStatus(status);
     } catch (error) {
@@ -464,8 +469,20 @@ function App() {
           )}
         </section>
 
-        {mode === "refactor" && <RefactorPanel key={root} root={root} />}
-        {mode === "ask" && <AskPanel key={root} root={root} />}
+        {/*
+          按面板隔离而不是整页包一层：一块挂了，其余两个模式还能用。
+          包在最外层的话，任何一处渲染异常都会让整个应用白屏。
+        */}
+        {mode === "refactor" && (
+          <ErrorBoundary area="改造面板">
+            <RefactorPanel key={root} root={root} />
+          </ErrorBoundary>
+        )}
+        {mode === "ask" && (
+          <ErrorBoundary area="追问面板">
+            <AskPanel key={root} root={root} />
+          </ErrorBoundary>
+        )}
 
         {mode === "analyze" && (
           <>

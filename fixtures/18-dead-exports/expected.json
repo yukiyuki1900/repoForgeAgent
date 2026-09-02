@@ -1,0 +1,27 @@
+{
+  "title": "未使用的导出：检出真死代码，且不误报五类看起来没人引用的导出",
+  "status": "expected-pass",
+  "why": "检测本身只是「引用数为 0」，难点全在排除误报。这个用例把五类必然误报的情况摆在一起：包入口的对外 API、package.json 指向的构建产物入口、被 barrel 转发的符号、框架按名字读取的 getServerSideProps、文件路由目录下的导出——它们静态上都没有引用者，删掉却会直接把项目改坏。notDead 那组断言是这个用例的核心：漏报只是没清干净，误报会让人删掉还在用的代码。",
+  "expect": {
+    "deadExports": {
+      "deadCount": 4,
+      "dead": [
+        { "file": "src/dead.ts", "symbol": "unusedHelper", "usedInFile": false },
+        { "file": "src/dead.ts", "symbol": "UnusedOptions", "usedInFile": false },
+        { "file": "src/internal.ts", "symbol": "buildUrl", "usedInFile": true },
+        { "file": "src/internal.ts", "symbol": "callApi", "usedInFile": false }
+      ],
+      "testOnly": ["parseFlag"],
+      "notDead": [
+        "greet",
+        "VERSION",
+        "publicApi",
+        "formatName",
+        "sharedConstant",
+        "getServerSideProps",
+        "loadProfile",
+        "parseFlag"
+      ]
+    }
+  }
+}

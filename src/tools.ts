@@ -2,6 +2,7 @@ import path from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
 import { analyzeCycles } from "./analyzers.js";
+import { analyzeDeadExports, type DeadExportResult } from "./deadexports.js";
 import { extractGraph } from "./graph.js";
 import type { FileNode, Finding, RelationEdge, SymbolNode } from "./model.js";
 import { scanFiles } from "./scanner.js";
@@ -55,12 +56,78 @@ export async function buildIndex(root: string): Promise<CodebaseIndex> {
   };
 }
 
+/**
+ * 死导出检测按索引缓存。
+ *
+ * 它要重新装载一次 TypeScript 语义项目并对每个导出跑引用分析，比其它工具贵得多，
+ * 不该在每次调用时重算。挂在索引对象上而不是模块级变量上，是因为
+ * `refreshIndex` 会换掉整个索引——旧索引被回收，缓存跟着自动失效，
+ * 不需要额外写一处「记得清缓存」的逻辑。
+ */
+const deadExportCache = new WeakMap<CodebaseIndex, DeadExportResult>();
+
+function deadExportsOf(index: CodebaseIndex): DeadExportResult {
+  const cached = deadExportCache.get(index);
+  if (cached) return cached;
+
+  const result = analyzeDeadExports({
+    root: index.root,
+    files: index.files,
+    contents: index.contents,
+  });
+  deadExportCache.set(index, result);
+  return result;
+}
+
 /** 一次工具调用的记录，用于展示与评估 */
 export interface ToolCall {
   name: string;
   args: unknown;
   /** 一句话说明这次调用查到了什么，供进度行展示 */
   summary: string;
+  /**
+   * 返回值的**预览**，不是返回值本身。
+   *
+   * 这个区别是这一层的全部要点：`readSource` 一次能返回 120 行源码，
+   * 一轮问答里十几次调用就是几十 KB。而工具事件要进 `record.events`、
+   * 要走 SSE、**每次断线重连还要整份回放一遍**——原样塞进去，
+   * 三个地方一起炸。
+   */
+  result?: string;
+  /** 预览省略了多少字符。**静默截断会让人以为看到了全部** */
+  resultOmitted?: number;
+}
+
+/**
+ * 预览的规模上限。
+ *
+ * 算过账再定的：一次 ask 最多 8 轮、每轮几次调用，按 20 次算——
+ * 截断后 20 × 800 ≈ 16KB，和回答文本本身一个量级，可以接受；
+ * 不截断的话 `readSource` 单次就 4KB 上下，20 次 80KB，
+ * 而且每次重连都要重发一遍。
+ */
+export const PREVIEW = {
+  /** 参数通常很小，但模型可能传一个巨大的字符串进来 */
+  args: 200,
+  result: 600,
+};
+
+/** 把任意返回值压成一段可读的预览，超出部分如实报告 */
+export function previewOf(value: unknown, limit = PREVIEW.result): {
+  text: string;
+  omitted: number;
+} {
+  let text: string;
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value);
+  } catch {
+    // 循环引用之类。宁可给一句说明，也不要让展示层把整次调用弄崩
+    return { text: "[无法序列化]", omitted: 0 };
+  }
+
+  if (text === undefined) return { text: "undefined", omitted: 0 };
+  if (text.length <= limit) return { text, omitted: 0 };
+  return { text: text.slice(0, limit), omitted: text.length - limit };
 }
 
 const LIMITS = {
@@ -79,10 +146,11 @@ export interface ToolsetOptions {
 export function createTools(index: CodebaseIndex, options: ToolsetOptions = {}) {
   const calls: ToolCall[] = [];
 
+  // 只入队，不在这里通知——`onCall` 要等 execute 返回后才发，
+  // 那时才拿得到返回值。这些工具全是内存查询、毫秒级完成，
+  // 拆成「开始」「结束」两个事件只会让时间线长一倍，换不来任何实时性
   const record = (name: string, args: unknown, summary: string): void => {
-    const call = { name, args, summary };
-    calls.push(call);
-    options.onCall?.(call);
+    calls.push({ name, args, summary });
   };
 
   /** 把列表裁到上限，并如实报告裁掉了多少 */
@@ -338,6 +406,53 @@ export function createTools(index: CodebaseIndex, options: ToolsetOptions = {}) 
       },
     }),
 
+    listDeadExports: tool({
+      description:
+        "列出仓库里没有任何引用者的导出符号。回答「有哪些死代码」「哪些导出可以删」时用这个。" +
+        "判定从严：包入口、框架约定导出（getServerSideProps 等）、被 export 转发的符号、" +
+        "默认导出与 .vue 文件都不参与判定，因此结果是漏报方向的——列出来的基本可信，没列出来的不代表活着。",
+      parameters: z.object({
+        path: z.string().optional().describe("只看这个文件里的死导出，留空则列出全部"),
+      }),
+      execute: async ({ path: input }) => {
+        let target: string | undefined;
+
+        // 路径校验放在分析之前：这个工具要重新装载一次语义项目，
+        // 路径本来就写错时不该先花几秒算完再说「没这个文件」
+        if (input) {
+          const resolved = resolvePath(input);
+          if (!resolved.path) {
+            record("listDeadExports", { path: input }, `路径未命中：${input}`);
+            return notFound(input, resolved.suggestions);
+          }
+          target = resolved.path;
+        }
+
+        const result = deadExportsOf(index);
+        const dead = target ? result.dead.filter((item) => item.file === target) : result.dead;
+        const scope = target ?? "全部";
+
+        record("listDeadExports", { path: input }, `${dead.length} 个死导出（范围：${scope}）`);
+
+        return {
+          ...capped(
+            dead.map((item) => ({
+              file: item.file,
+              line: item.line,
+              symbol: item.symbol,
+              kind: item.kind,
+              // 决定了能不能整条删掉，是「怎么改」的关键信息
+              stillUsedInsideFile: item.usedInFile,
+            })),
+          ),
+          totalExports: result.totalExports,
+          testOnlyCount: result.testOnly.length,
+          excludedCount: result.excluded.length,
+          note: "excludedCount 是被规则排除的导出数（入口、框架约定名、被转发等），它们不算死代码",
+        };
+      },
+    }),
+
     readSource: tool({
       description: `读取源码片段，单次最多 ${LIMITS.sourceLines} 行。用于确认某段代码到底做了什么，不要凭文件名猜测。`,
       parameters: z.object({
@@ -375,7 +490,63 @@ export function createTools(index: CodebaseIndex, options: ToolsetOptions = {}) 
     }),
   };
 
-  return { tools, calls };
+  return { tools: observed(tools, calls, options.onCall), calls };
+}
+
+/**
+ * 给每个工具的 `execute` 包一层，把返回值回填到刚记录的那次调用上。
+ *
+ * 为什么用包装而不是给 15 个 `record()` 调用点各加一个参数：
+ * **加参数要靠人记得传，包装不用。** 以后新增一个工具，它自动就带上了
+ * 参数与返回值预览；漏传的那种失败是静默的——事件照发，只是少了半边信息，
+ * 没有任何东西会因此变红。
+ */
+function observed<T extends Record<string, { execute?: unknown }>>(
+  tools: T,
+  calls: ToolCall[],
+  onCall?: (call: ToolCall) => void,
+): T {
+  const wrapped: Record<string, unknown> = {};
+
+  for (const [name, definition] of Object.entries(tools)) {
+    const original = definition.execute as
+      | ((args: unknown, context: unknown) => Promise<unknown>)
+      | undefined;
+
+    if (!original) {
+      wrapped[name] = definition;
+      continue;
+    }
+
+    wrapped[name] = {
+      ...definition,
+      execute: async (args: unknown, context: unknown) => {
+        const before = calls.length;
+        const result = await original(args, context);
+
+        // 工具内部没调 record 就不硬造一条记录出来
+        if (calls.length > before) {
+          const call = calls[calls.length - 1];
+          const preview = previewOf(result);
+          call.result = preview.text;
+          if (preview.omitted > 0) call.resultOmitted = preview.omitted;
+
+          try {
+            onCall?.(call);
+          } catch {
+            // `onCall` 是展示侧的回调，最终会写进一条 SSE 连接。
+            // 连接在这一刻断掉是完全正常的事，但它不该把模型的工具调用
+            // 一起拖挂——**观察者的失败不能改变被观察者的行为**。
+            // 事件丢了就丢了，`calls` 里的记录还在，结束后拉状态照样拿得到
+          }
+        }
+
+        return result;
+      },
+    };
+  }
+
+  return wrapped as T;
 }
 
 export type Toolset = ReturnType<typeof createTools>["tools"];

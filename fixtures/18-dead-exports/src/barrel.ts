@@ -1,0 +1,1 @@
+export { sharedConstant } from "./forwarded";

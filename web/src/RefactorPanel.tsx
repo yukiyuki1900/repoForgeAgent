@@ -80,9 +80,11 @@ export function RefactorPanel({ root }: { root: string }) {
     setFinishedAt(undefined);
 
     try {
-      const status = await runTask<RefactorResult>("/refactor", { root, apply }, (event) =>
-        setEvents((previous) => [...previous, event]),
-      );
+      const status = await runTask<RefactorResult>({
+        url: "/refactor",
+        body: { root, apply },
+        onEvent: (event) => setEvents((previous) => [...previous, event]),
+      });
 
       if (status.status === "failed") {
         setNotice(`执行失败：${status.error ?? "未知错误"}`);

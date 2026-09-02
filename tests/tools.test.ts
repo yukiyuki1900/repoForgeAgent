@@ -4,7 +4,13 @@ import { before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { MockLanguageModelV1, simulateReadableStream } from "ai/test";
 import { askCodebase } from "../src/ask.js";
-import { buildIndex, createTools, type CodebaseIndex } from "../src/tools.js";
+import {
+  buildIndex,
+  type CodebaseIndex,
+  createTools,
+  PREVIEW,
+  previewOf,
+} from "../src/tools.js";
 
 /**
  * Agent 的评估分两层，混在一起就什么都测不了：
@@ -145,10 +151,49 @@ describe("工具层", () => {
       "getDependents",
       "getFileSummary",
       "listCycles",
+      "listDeadExports",
       "listHotspots",
       "readSource",
       "searchFiles",
     ]);
+  });
+
+  it("listDeadExports 给出死导出，并带上「文件内是否还在用」", async () => {
+    const removalIndex = await buildIndex(path.join(ROOT, "fixtures", "19-dead-export-removal"));
+    const { tools } = createTools(removalIndex);
+
+    const result = (await tools.listDeadExports.execute({}, CTX)) as {
+      rows: Array<{ file: string; symbol: string; stillUsedInsideFile: boolean }>;
+      totalExports: number;
+    };
+
+    assert.equal(result.totalExports, 9);
+
+    const symbols = result.rows.map((row) => row.symbol).sort();
+    assert.deepEqual(symbols, ["deadHelper", "internalPath", "pad", "registered"]);
+
+    // 这个字段决定了能不能整条删掉，是「怎么改」的关键信息，不能丢
+    const internalPath = result.rows.find((row) => row.symbol === "internalPath");
+    assert.equal(internalPath?.stillUsedInsideFile, true);
+    const deadHelper = result.rows.find((row) => row.symbol === "deadHelper");
+    assert.equal(deadHelper?.stillUsedInsideFile, false);
+
+    // 活着的导出一个都不能出现
+    for (const alive of ["main", "activeHelper", "readConfig", "activeFlag", "render"]) {
+      assert.ok(!symbols.includes(alive), `${alive} 还在被引用，不该出现在死导出里`);
+    }
+  });
+
+  it("listDeadExports 路径查不到时明说，并给出下一步", async () => {
+    const { tools } = createTools(index);
+    const result = (await tools.listDeadExports.execute({ path: "nope.ts" }, CTX)) as {
+      error?: string;
+      hint?: string;
+    };
+
+    // 返回空列表会让模型以为「这个文件真的没有死导出」，比报错糟糕得多
+    assert.ok(result.error, "查不到必须明说");
+    assert.ok(result.hint, "还要给出可操作的下一步，否则模型只会换个名字继续猜");
   });
 
   it("listHotspots 按入边数降序，一次给出排名", async () => {
@@ -170,6 +215,92 @@ describe("工具层", () => {
       total: number;
     };
     assert.equal(dependents.total, top.dependentCount);
+  });
+
+  it("事件带上参数与返回值预览，而不只是工具名", async () => {
+    const seen: Array<{ args: unknown; result?: string }> = [];
+    const { tools } = createTools(index, {
+      onCall: (call) => seen.push({ args: call.args, result: call.result }),
+    });
+
+    await tools.searchFiles.execute({ keyword: "src" }, CTX);
+
+    // 只有工具名和一句摘要的话，「它到底查了什么、看到了什么」全靠猜
+    assert.deepEqual(seen[0].args, { keyword: "src" });
+    assert.ok(seen[0].result, "返回值预览不能为空");
+    assert.match(seen[0].result, /"path"/, "预览应当是真实返回值，不是占位符");
+  });
+
+  it("返回值在 onCall 触发时已经填好，而不是之后补上", async () => {
+    // 时序错了的话，SSE 那一刻推出去的事件就是半份的。
+    // 事后再改 `calls` 里的对象，只有结束后拉状态才看得到——
+    // 这种缺陷在「跑完再看」的测试里完全隐形
+    const atCallTime: Array<string | undefined> = [];
+    const { tools } = createTools(index, {
+      onCall: (call) => atCallTime.push(call.result),
+    });
+
+    await tools.findSymbol.execute({ name: "a" }, CTX);
+
+    assert.ok(atCallTime[0], "onCall 拿到的必须已经是带返回值的记录");
+  });
+
+  it("超长返回值被截断，并如实报告省略了多少", async () => {
+    const seen: Array<{ result?: string; resultOmitted?: number }> = [];
+    // 这个 fixture 里有一个上百行的文件，读出来的 JSON 稳定超过预览上限
+    const wide = await buildIndex(path.join(ROOT, "fixtures", "20-many-candidates"));
+    const { tools } = createTools(wide, {
+      onCall: (call) => seen.push({ result: call.result, resultOmitted: call.resultOmitted }),
+    });
+
+    // readSource 一次能返回上百行源码。原样进事件流的话，
+    // 它要进 record.events、走 SSE，**每次断线重连还要整份回放**
+    await tools.readSource.execute({ path: "src/index.ts", startLine: 1, endLine: 200 }, CTX);
+
+    const call = seen.at(-1)!;
+    assert.equal(call.result?.length, PREVIEW.result, "超出上限必须截断到上限");
+    assert.ok(
+      (call.resultOmitted ?? 0) > 0,
+      "静默截断会让人以为看到了全部，省略量必须说出来",
+    );
+  });
+
+  it("没被截断时不写省略量", async () => {
+    const seen: Array<number | undefined> = [];
+    const { tools } = createTools(index, {
+      onCall: (call) => seen.push(call.resultOmitted),
+    });
+
+    // 查不到的路径，返回值很短
+    await tools.getFileSummary.execute({ path: "没有这个文件.ts" }, CTX);
+
+    // 恒定带一个 `resultOmitted: 0` 的话，前端就得判 `> 0` 而不是判有无，
+    // 迟早有人写成 `if (call.resultOmitted)` 之外的样子
+    assert.equal(seen[0], undefined);
+  });
+
+  it("展示回调抛错不影响工具本身的返回值", async () => {
+    // onCall 最终会写进一条 SSE 连接，而连接随时可能已经断了。
+    // **观察者的失败不能改变被观察者的行为**
+    const { tools, calls } = createTools(index, {
+      onCall: () => {
+        throw new Error("SSE 连接已关闭");
+      },
+    });
+
+    const result = (await tools.searchFiles.execute({ keyword: "src" }, CTX)) as { total: number };
+
+    assert.ok(result.total > 0, "工具必须照常返回");
+    assert.equal(calls.length, 1, "记录也必须留下——事件丢了，结束后拉状态还拿得到");
+  });
+
+  it("previewOf 遇到无法序列化的值给一句说明而不是崩掉", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    // 展示层把整次调用弄崩，比少看一行预览糟糕得多
+    assert.deepEqual(previewOf(circular), { text: "[无法序列化]", omitted: 0 });
+    assert.deepEqual(previewOf(undefined), { text: "undefined", omitted: 0 });
   });
 
   it("依赖类工具的摘要必须带上目标路径", async () => {

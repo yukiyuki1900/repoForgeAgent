@@ -1146,6 +1146,7 @@
 
 .activity-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 14px;
   padding: 7px 0;
@@ -1225,4 +1226,122 @@
 
 .streaming-pending:empty {
   margin: 0;
+}
+
+/* 失败提示里的重试入口。一句红字而没有重来的办法，
+   等于让用户自己把问题再打一遍 */
+.notice .inline-retry {
+  margin-left: 10px;
+  padding: 2px 10px;
+  font-size: 12px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.notice .inline-retry:hover {
+  background: rgb(0 0 0 / 6%);
+}
+
+.error-boundary .error-detail {
+  margin-top: 10px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  background: rgb(0 0 0 / 4%);
+  border-radius: 6px;
+}
+
+/* 代码块。等宽字体和保留换行本身就是信息，
+   所以流式期间「正在写的代码块」也用同一套样式，
+   避免闭合那一刻从段落跳成代码块 */
+.markdown .code-block {
+  margin: 12px 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: rgb(0 0 0 / 4%);
+  border: 1px solid rgb(0 0 0 / 8%);
+  border-radius: 6px;
+}
+
+.markdown .code-block code {
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+  background: none;
+}
+
+.markdown .code-block[data-lang]::before {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: rgb(0 0 0 / 40%);
+  content: attr(data-lang);
+}
+
+.tok-comment {
+  color: #6a737d;
+  font-style: italic;
+}
+
+.tok-string {
+  color: #032f62;
+}
+
+.tok-number {
+  color: #005cc5;
+}
+
+.tok-keyword {
+  color: #d73a49;
+}
+
+.streaming-code {
+  position: relative;
+}
+
+.streaming-code .streaming-cursor {
+  margin-left: 2px;
+}
+
+/* 工具调用的参数与返回值预览。整行占满，缩进对齐到摘要列 */
+.activity-tool {
+  flex-basis: 100%;
+  margin: 4px 0 2px 164px;
+  padding-left: 10px;
+  border-left: 2px solid #e3e9f0;
+}
+
+.activity-tool-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.activity-tool-key {
+  flex: none;
+  width: 24px;
+  color: #9aa9ba;
+}
+
+.activity-tool-row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #6b7f96;
+  white-space: pre-wrap;
+}
+
+/* 截断必须说出来。静默截断会让人以为看到了全部 */
+.activity-tool-omitted {
+  margin-left: 6px;
+  color: #a8b4c2;
+  font-style: normal;
 }

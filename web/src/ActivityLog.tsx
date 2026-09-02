@@ -87,6 +87,61 @@ function useElapsed(startedAt?: number, finishedAt?: number): number {
   return (finishedAt ?? now) - startedAt;
 }
 
+/**
+ * 工具调用的参数与返回值。
+ *
+ * **展示的是预览，不是完整返回值**——`readSource` 一次能返回上百行源码，
+ * 服务端已经截断过，这里如实把省略量说出来。
+ *
+ * 静默截断会让人以为看到了全部，然后基于半份数据下判断；
+ * 这条教训在给模型的上下文那层已经付过一次代价了，展示层同理。
+ */
+export function ToolDetail({ tool }: { tool: NonNullable<TaskEvent["tool"]> }) {
+  if (!tool.args && !tool.result) return null;
+
+  return (
+    <div className="activity-tool">
+      {tool.args && (
+        <div className="activity-tool-row">
+          <span className="activity-tool-key">参数</span>
+          <code>{tool.args}</code>
+        </div>
+      )}
+      {tool.result && (
+        <div className="activity-tool-row">
+          <span className="activity-tool-key">返回</span>
+          <code>
+            {tool.result}
+            {tool.resultOmitted ? (
+              <em className="activity-tool-omitted">…另有 {tool.resultOmitted} 字符未显示</em>
+            ) : null}
+          </code>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 展开后的一行。
+ *
+ * 抽成独立组件是为了能被单测直接渲染——展开态藏在 `useState` 后面，
+ * 而这套 web 测试用的是 `renderToStaticMarkup`，点不了按钮。
+ * 组件留在这里但断言够不着，等于没写：**把接线放进一个测得到的边界里，
+ * 比补一个点击模拟的测试栈便宜得多。**
+ */
+export function ActivityRow({ event }: { event: TaskEvent }) {
+  return (
+    <div className={`activity-row ${event.channel}`}>
+      <span className="activity-name">
+        {event.channel === "tool" ? `→ ${event.label}` : event.label}
+      </span>
+      <span className="activity-note">{event.detail ?? ""}</span>
+      {event.tool && <ToolDetail tool={event.tool} />}
+    </div>
+  );
+}
+
 export function ActivityLog({ events, running, startedAt, finishedAt, label }: Props) {
   const [open, setOpen] = useState(false);
   const elapsed = useElapsed(startedAt, finishedAt);
@@ -121,14 +176,7 @@ export function ActivityLog({ events, running, startedAt, finishedAt, label }: P
           {events.length === 0 ? (
             <p className="activity-empty">尚无记录</p>
           ) : (
-            events.map((event, index) => (
-              <div key={index} className={`activity-row ${event.channel}`}>
-                <span className="activity-name">
-                  {event.channel === "tool" ? `→ ${event.label}` : event.label}
-                </span>
-                <span className="activity-note">{event.detail ?? ""}</span>
-              </div>
-            ))
+            events.map((event, index) => <ActivityRow key={index} event={event} />)
           )}
         </div>
       )}

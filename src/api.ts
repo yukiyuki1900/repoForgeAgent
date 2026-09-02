@@ -11,7 +11,15 @@ import { runAskJob, runRefactorJob } from "./jobs.js";
 import { resolveModel } from "./llm.js";
 import { locateDirectories, type Fingerprint } from "./locate.js";
 import { readLatestRun, readRunSummaries } from "./storage.js";
-import { attachStream, getTask, startTask, toResponse, type TaskRecord } from "./tasks.js";
+import {
+  attachStream,
+  cancelTask,
+  getTask,
+  startTask,
+  summaryOf,
+  toResponse,
+  type TaskRecord,
+} from "./tasks.js";
 import { runAnalysis } from "./workflow.js";
 
 // 必须在读取任何配置之前加载
@@ -134,8 +142,8 @@ router.post("/ask", (ctx) => {
     kind: "ask",
     root,
     meta: { question },
-    run: ({ emit, emitText }) =>
-      runAskJob(root, question, model, emit, Number(body.maxSteps) || undefined, emitText),
+    run: ({ emit, emitText, signal }) =>
+      runAskJob(root, question, model, emit, Number(body.maxSteps) || undefined, emitText, signal),
   });
 
   accepted(ctx, record);
@@ -149,6 +157,26 @@ router.get("/tasks/:taskId", (ctx) => {
     return;
   }
   ctx.body = toResponse(record);
+});
+
+/**
+ * 停止一个任务。
+ *
+ * 必须有一个真实的服务端接口——前端把 EventSource 关掉只是「不看了」，
+ * 后台该跑还跑、该烧的 token 一个不少。**「停止生成」如果只做前端，
+ * 那是障眼法。**
+ *
+ * 幂等：重复取消、取消一个已结束的任务，都返回它当前的状态而不是报错。
+ * 用户连点两下停止是常态。
+ */
+router.post("/tasks/:taskId/cancel", (ctx) => {
+  const record = cancelTask(ctx.params.taskId);
+  if (!record) {
+    ctx.status = 404;
+    ctx.body = { error: "task not found" };
+    return;
+  }
+  ctx.body = summaryOf(record);
 });
 
 router.get("/tasks/:taskId/events", (ctx) => {
@@ -167,7 +195,9 @@ router.get("/tasks/:taskId/events", (ctx) => {
   });
   ctx.status = 200;
 
-  const stream = attachStream(record);
+  // 浏览器重连时自动带上这个头，服务端只补发它之后的事件。
+  // 不读它的话重连会把整条时间线再推一遍
+  const stream = attachStream(record, ctx.headers["last-event-id"] as string | undefined);
   ctx.body = stream;
   ctx.req.on("close", () => stream.destroy());
 });

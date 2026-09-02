@@ -63,6 +63,13 @@ export interface AskOptions {
    * 那几秒仍然是空白——这段就靠它填。
    */
   onTextDelta?: (delta: string) => void;
+  /**
+   * 取消信号。
+   *
+   * 不接它的话，「停止生成」只能做到前端不再显示——
+   * 模型那边照吐不误，token 照烧。
+   */
+  signal?: AbortSignal;
 }
 
 const DEFAULT_MAX_STEPS = 8;
@@ -77,6 +84,7 @@ export async function askCodebase(options: AskOptions): Promise<AskResult> {
     model,
     tools,
     maxSteps,
+    abortSignal: options.signal,
     system: SYSTEM_PROMPT,
     prompt: [
       `仓库概览：${index.files.length} 个文件、${index.symbols.length} 个符号、${index.edges.length} 条关系边、${index.cycles.length} 处循环依赖。`,

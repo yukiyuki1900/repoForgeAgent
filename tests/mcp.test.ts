@@ -48,6 +48,7 @@ describe("MCP Server", () => {
       "getDependents",
       "getFileSummary",
       "listCycles",
+      "listDeadExports",
       "listHotspots",
       "readSource",
       "refreshIndex",

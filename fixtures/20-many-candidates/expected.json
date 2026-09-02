@@ -1,0 +1,15 @@
+{
+  "title": "入口文件的大量导出不被误报，且候选池截断如实报告",
+  "status": "expected-pass",
+  "why": "32 个入口导出一个都不该进死导出清单——入口的导出就是对外 API，没有仓库内引用者是正常的。同时这个仓库会把 AI 提方案的候选池撑到超过上限（34 > 30），用来验证截断被如实报告：静默截断会让模型把「前 30 条」当成全部，然后得出「其余导出都还在用」这种自信的错误结论。",
+  "expect": {
+    "deadExports": {
+      "deadCount": 2,
+      "dead": [
+        { "file": "src/orphan.ts", "symbol": "forgotten", "usedInFile": false },
+        { "file": "src/orphan.ts", "symbol": "ForgottenOptions", "usedInFile": false }
+      ],
+      "notDead": ["c01", "c16", "c32"]
+    }
+  }
+}

@@ -17,9 +17,14 @@ import { readdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { analyzeCycles, analyzeFrontend, calculateMetrics } from "../src/analyzers.js";
+import { analyzeCycles, calculateMetrics } from "../src/analyzers.js";
 import { planTypeOnlyRefactor } from "../src/refactor.js";
 import { analyzeArchitecture } from "../src/architecture.js";
+import {
+  analyzeDeadExports,
+  planDeadExportRemoval,
+  toDeadExportFindings,
+} from "../src/deadexports.js";
 import { extractGraph } from "../src/graph.js";
 import { buildNarrationContext, estimateContextTokens } from "../src/narrate.js";
 import { scanFiles } from "../src/scanner.js";
@@ -60,6 +65,29 @@ interface Expectation {
       candidates?: Array<{ file: string; target: string }>;
       blocked?: Array<{ file: string; reasonContains: string }>;
       cyclesAfter?: number;
+    };
+    deadExports?: {
+      /** 必须检出的死导出，`usedInFile` 决定 A2 用哪种改法 */
+      dead?: Array<{ file: string; symbol: string; usedInFile?: boolean }>;
+      /** 必须进 testOnly 列表的符号名 */
+      testOnly?: string[];
+      /**
+       * **绝不能**出现在死导出列表里的符号。
+       *
+       * 这是本用例最重要的一组断言：这个检测的风险全在误报，
+       * 「少报一个」只是没清干净，「多报一个」会让人删掉还在用的代码。
+       */
+      notDead?: string[];
+      /** 死导出总数，精确匹配——只写 dead 列表的话，多报不会被发现 */
+      deadCount?: number;
+      /** 清理计划：检测之后「敢不敢动、怎么动」 */
+      removal?: {
+        exportsBefore?: number;
+        /** 写盘后要被对账的那个预测值 */
+        exportsAfter?: number;
+        edits?: Array<{ file: string; symbol: string; action: string }>;
+        blocked?: Array<{ symbol: string; reasonContains: string }>;
+      };
     };
     architecture?: {
       sourceRoot?: string;
@@ -203,6 +231,88 @@ async function evaluateFixture(dir: string): Promise<FixtureResult> {
     }
   }
 
+  if (expectation.expect.deadExports) {
+    const expected = expectation.expect.deadExports;
+    const result = analyzeDeadExports({ root: dir, files, contents });
+
+    if (expected.deadCount !== undefined) {
+      checks.push({
+        label: `死导出数量 ${result.dead.length} = ${expected.deadCount}`,
+        ok: result.dead.length === expected.deadCount,
+      });
+    }
+
+    for (const item of expected.dead ?? []) {
+      const hit = result.dead.find((d) => d.file === item.file && d.symbol === item.symbol);
+      checks.push({ label: `死导出 ${item.file}#${item.symbol}`, ok: Boolean(hit) });
+
+      if (hit && item.usedInFile !== undefined) {
+        checks.push({
+          label: `${item.symbol} 文件内使用 ${hit.usedInFile} = ${item.usedInFile}`,
+          ok: hit.usedInFile === item.usedInFile,
+        });
+      }
+    }
+
+    for (const symbol of expected.testOnly ?? []) {
+      checks.push({
+        label: `仅测试引用 ${symbol}`,
+        ok: result.testOnly.some((d) => d.symbol === symbol),
+      });
+    }
+
+    // 误报断言：这些符号出现在死导出里就是能删掉活代码的 bug
+    for (const symbol of expected.notDead ?? []) {
+      checks.push({
+        label: `未误报 ${symbol}`,
+        ok: !result.dead.some((d) => d.symbol === symbol),
+      });
+    }
+
+    if (expected.removal) {
+      const wanted = expected.removal;
+      const plan = planDeadExportRemoval({ root: dir, files, contents });
+
+      if (wanted.exportsBefore !== undefined) {
+        checks.push({
+          label: `导出总数 ${plan.exportsBefore} = ${wanted.exportsBefore}`,
+          ok: plan.exportsBefore === wanted.exportsBefore,
+        });
+      }
+      if (wanted.exportsAfter !== undefined) {
+        checks.push({
+          label: `预测改后导出数 ${plan.exportsAfter} = ${wanted.exportsAfter}`,
+          ok: plan.exportsAfter === wanted.exportsAfter,
+        });
+      }
+
+      // 改动数量必须精确匹配：多一条就是一次没人要的改写
+      if (wanted.edits) {
+        checks.push({
+          label: `清理条数 ${plan.edits.length} = ${wanted.edits.length}`,
+          ok: plan.edits.length === wanted.edits.length,
+        });
+        for (const item of wanted.edits) {
+          checks.push({
+            label: `${item.symbol} 改法为 ${item.action}`,
+            ok: plan.edits.some(
+              (e) => e.file === item.file && e.symbol === item.symbol && e.action === item.action,
+            ),
+          });
+        }
+      }
+
+      for (const item of wanted.blocked ?? []) {
+        checks.push({
+          label: `拒绝清理 ${item.symbol}（${item.reasonContains}）`,
+          ok: plan.blocked.some(
+            (b) => b.symbol === item.symbol && b.reason.includes(item.reasonContains),
+          ),
+        });
+      }
+    }
+  }
+
   if (expectation.expect.architecture) {
     const expected = expectation.expect.architecture;
     const architecture = analyzeArchitecture(files, symbols, edges);
@@ -276,7 +386,10 @@ async function checkNarration(
   },
 ): Promise<Check[]> {
   const { files, contents, symbols, edges, cycles } = input;
-  const findings = [...cycles, ...analyzeFrontend(contents)];
+  const findings = [
+    ...cycles,
+    ...toDeadExportFindings(analyzeDeadExports({ root: dir, files, contents })),
+  ];
 
   const context = buildNarrationContext({
     stack: await detectStack(dir, contents),

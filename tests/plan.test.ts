@@ -63,7 +63,7 @@ describe("planExecution", () => {
   it("没有问题时按全量审计排布", () => {
     const plan = planExecution({ hasModel: true });
     assert.equal(plan.intent, "full-audit");
-    assert.deepEqual(plan.run.sort(), ["analyzeArchitecture", "frontend", "narrate"]);
+    assert.deepEqual(plan.run.sort(), ["analyzeArchitecture", "deadExports", "narrate"]);
   });
 
   it("问循环依赖时只保留与答案相关的节点", () => {
@@ -100,7 +100,7 @@ describe("planExecution", () => {
   it("--full 覆盖一切裁剪", () => {
     const plan = planExecution({ query: "有循环依赖吗", hasModel: true, full: true });
     assert.equal(plan.intent, "full-audit");
-    assert.deepEqual(plan.run.sort(), ["analyzeArchitecture", "frontend", "narrate"]);
+    assert.deepEqual(plan.run.sort(), ["analyzeArchitecture", "deadExports", "narrate"]);
   });
 
   it("每一个被跳过的节点都要有理由", () => {
@@ -115,7 +115,7 @@ describe("条件路由（端到端）", () => {
   it("全量：所有节点都执行", async () => {
     const { state, executed } = await run(sandboxFrom("09-src-layout"), {});
 
-    for (const node of ["analyzeArchitecture", "dependency", "quality", "frontend", "narrate"]) {
+    for (const node of ["analyzeArchitecture", "dependency", "quality", "deadExports", "narrate"]) {
       assert.ok(executed.includes(node), `${node} 应当执行`);
     }
     assert.ok(state.report, "报告必须产出");
@@ -129,7 +129,7 @@ describe("条件路由（端到端）", () => {
     // 跳掉的
     assert.ok(!executed.includes("narrate"), "narrate 应当被跳过");
     assert.ok(!executed.includes("analyzeArchitecture"), "analyzeArchitecture 应当被跳过");
-    assert.ok(!executed.includes("frontend"), "frontend 应当被跳过");
+    assert.ok(!executed.includes("deadExports"), "deadExports 应当被跳过");
 
     // 留下的：答案本身，以及报告的必填内容
     assert.ok(executed.includes("dependency"));
@@ -168,7 +168,7 @@ describe("条件路由（端到端）", () => {
       full: true,
     });
 
-    for (const node of ["analyzeArchitecture", "frontend", "narrate"]) {
+    for (const node of ["analyzeArchitecture", "deadExports", "narrate"]) {
       assert.ok(executed.includes(node), `--full 下 ${node} 仍应执行`);
     }
   });

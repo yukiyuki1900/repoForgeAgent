@@ -139,51 +139,18 @@ function findLoop(component: string[], adjacency: Map<string, string[]>): string
   return undefined;
 }
 
-const REACT_FILE = /\.(tsx|jsx)$/;
-const HOOK_CALL = /\buse[A-Z]\w*\s*\(/;
-const CONDITIONAL_HOOK = /\b(if|for|while)\s*\([^)]*\)[^{]*\{[\s\S]*use[A-Z]/;
-const LARGE_FILE_LINES = 500;
-
-/**
- * 前端专项检查。
+/*
+ * 这里曾经有一个 `analyzeFrontend`：三条正则规则——条件分支里调 Hook、
+ * 文件含 eslint-disable、文件超过 500 行。
  *
- * 已知限制：当前基于正则匹配，存在误报与漏报，
- * 后续需要替换为 AST / ESLint 规则级别的判定。
+ * 删掉它是因为三条都站不住：第一条用正则判断控制流必然误报，ESLint 的
+ * `react-hooks/rules-of-hooks` 走 AST 做得准得多；后两条与「前端」毫无关系，
+ * 任何语言的任何仓库都能报出一堆，属于凑数的噪声。
+ *
+ * 它在流水线里的位置由 `deadExports` 节点接手——同样是并行分析器之一，
+ * 但判定基于 TypeScript 的引用分析，结论可以被验证、被改造、被回滚。
+ * 宁可少一个卖点，也不留一个经不起看的实现。
  */
-export function analyzeFrontend(contents: Map<string, string>): Finding[] {
-  const findings: Finding[] = [];
-
-  for (const [file, content] of contents) {
-    if (REACT_FILE.test(file) && HOOK_CALL.test(content) && CONDITIONAL_HOOK.test(content)) {
-      findings.push({
-        rule: "react-hooks-condition",
-        severity: "error",
-        message: "疑似在条件分支中调用 Hook，请人工确认",
-        files: [file],
-      });
-    }
-
-    if (content.includes("eslint-disable") || content.includes("@ts-ignore")) {
-      findings.push({
-        rule: "lint-bypass",
-        severity: "warning",
-        message: "文件包含 lint/type 检查绕过指令",
-        files: [file],
-      });
-    }
-
-    if (content.split(/\r?\n/).length > LARGE_FILE_LINES) {
-      findings.push({
-        rule: "large-file",
-        severity: "warning",
-        message: `文件超过 ${LARGE_FILE_LINES} 行，建议拆分职责`,
-        files: [file],
-      });
-    }
-  }
-
-  return findings;
-}
 
 export interface Metrics {
   score: number;

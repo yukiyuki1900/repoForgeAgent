@@ -2,7 +2,8 @@ import { setMaxListeners } from "node:events";
 import path from "node:path";
 import { Annotation, END, MemorySaver, START, StateGraph } from "@langchain/langgraph";
 import { analyzeArchitecture, type ArchitectureReport } from "./architecture.js";
-import { analyzeCycles, analyzeFrontend, calculateMetrics } from "./analyzers.js";
+import { analyzeCycles, calculateMetrics } from "./analyzers.js";
+import { analyzeDeadExports, toDeadExportFindings } from "./deadexports.js";
 import { extractGraph, graphToMermaid } from "./graph.js";
 import { parseQueryWithModel, resolveModel } from "./llm.js";
 import { planExecution, summarizePlan, type ExecutionPlan } from "./plan.js";
@@ -210,8 +211,8 @@ function describe(name: string, next: Partial<WorkflowState>): string | undefine
       return `${next.findings?.length ?? 0} 处循环依赖`;
     case "quality":
       return next.metrics ? `维护性评分 ${next.metrics.score}` : undefined;
-    case "frontend":
-      return `${next.findings?.length ?? 0} 个前端问题`;
+    case "deadExports":
+      return `${next.findings?.length ?? 0} 个文件存在未使用的导出`;
     case "retrieveContext":
       // 「没提问」和「提了问但没命中」是两回事，早先都显示成前者
       if (!next.queryPlan) return "未提供检索问题";
@@ -320,8 +321,20 @@ export function createAnalysisGraph(options: GraphOptions = {}) {
       ),
     )
     .addNode(
-      "frontend",
-      node("frontend", async (state) => ({ findings: analyzeFrontend(state.contents) }), context),
+      "deadExports",
+      node(
+        "deadExports",
+        async (state) => ({
+          findings: toDeadExportFindings(
+            analyzeDeadExports({
+              root: state.root,
+              files: state.files,
+              contents: state.contents,
+            }),
+          ),
+        }),
+        context,
+      ),
     )
     .addNode("plan", node("plan", planHandler(planner), context))
     .addNode("retrieveContext", node("retrieveContext", retrievalHandler(queryPlanner), context))
@@ -342,7 +355,7 @@ export function createAnalysisGraph(options: GraphOptions = {}) {
       "analyzeArchitecture",
       "dependency",
       "quality",
-      "frontend",
+      "deadExports",
     ])
 
     // fan-in：四个分支指向同一个下一站，该节点只执行一次；
@@ -351,7 +364,7 @@ export function createAnalysisGraph(options: GraphOptions = {}) {
     .addConditionalEdges("analyzeArchitecture", afterAnalyzers, [...AFTER_ANALYZERS])
     .addConditionalEdges("dependency", afterAnalyzers, [...AFTER_ANALYZERS])
     .addConditionalEdges("quality", afterAnalyzers, [...AFTER_ANALYZERS])
-    .addConditionalEdges("frontend", afterAnalyzers, [...AFTER_ANALYZERS])
+    .addConditionalEdges("deadExports", afterAnalyzers, [...AFTER_ANALYZERS])
 
     // 事实全部就位后再决定要不要花 18 秒让模型写一段解读
     .addConditionalEdges("retrieveContext", selectNarration, ["narrate", "render"])
@@ -369,11 +382,11 @@ export function createAnalysisGraph(options: GraphOptions = {}) {
  * 没被选中的分支不执行、也不会阻塞下游的 fan-in。
  */
 function selectAnalyzers(state: WorkflowState): string[] {
-  const optional = new Set(state.executionPlan?.run ?? ["analyzeArchitecture", "frontend"]);
+  const optional = new Set(state.executionPlan?.run ?? ["analyzeArchitecture", "deadExports"]);
   const branches = ["dependency", "quality"];
 
   if (optional.has("analyzeArchitecture")) branches.push("analyzeArchitecture");
-  if (optional.has("frontend")) branches.push("frontend");
+  if (optional.has("deadExports")) branches.push("deadExports");
   return branches;
 }
 

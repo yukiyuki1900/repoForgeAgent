@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ActivityLog, formatElapsed } from "./ActivityLog";
 import { StreamingMarkdown } from "./Markdown";
-import { describeError, runTask, type TaskEvent } from "./task";
+import { describeError, runTask, TaskCancelled, type TaskEvent } from "./task";
 import { useTypewriter } from "./typewriter";
 
 /**
@@ -21,6 +21,13 @@ import { useTypewriter } from "./typewriter";
  * **节奏由客户端排。** 服务端确实在逐段推，但 TCP 缓冲会合并、React 会
  * 批处理，加上模型吐字本来就快——直接渲染的结果是「唰」地全出来。
  * 所以文本先过一层打字机（typewriter.ts），按帧吐字。
+ *
+ * **停止要真的停。** 按钮不是把界面切回空闲就完事——`AbortController`
+ * 会触发一次服务端 cancel，把 signal 一路送到 `streamText`。
+ * 只做前端的「停止生成」是障眼法，token 照烧。
+ *
+ * **失败要能重来。** 一句红字提示而没有重试入口，等于让用户自己
+ * 把问题再打一遍。停止和失败要分开：用户自己停的不算故障，不提示。
  */
 
 interface AskResult {
@@ -48,15 +55,20 @@ export function AskPanel({ root }: { root: string }) {
   const [busy, setBusy] = useState(false);
   const [startedAt, setStartedAt] = useState<number>();
   const [finishedAt, setFinishedAt] = useState<number>();
+  /** 上一次失败的问题，用于重试——不能依赖输入框，用户可能已经改了 */
+  const [retryable, setRetryable] = useState<string>();
+  const controller = useRef<AbortController>();
 
-  const ask = async () => {
-    const trimmed = question.trim();
+  const ask = async (override?: string) => {
+    const trimmed = (override ?? question).trim();
     if (!trimmed) {
       setNotice("请先输入问题");
       return;
     }
 
+    controller.current = new AbortController();
     setBusy(true);
+    setRetryable(undefined);
     setEvents([]);
     setResult(undefined);
     setStreaming("");
@@ -65,25 +77,43 @@ export function AskPanel({ root }: { root: string }) {
     setFinishedAt(undefined);
 
     try {
-      const status = await runTask<AskResult>(
-        "/ask",
-        { root, question: trimmed },
-        (event) => setEvents((previous) => [...previous, event]),
-        (delta, replace) => setStreaming((previous) => (replace ? delta : previous + delta)),
-      );
+      const status = await runTask<AskResult>({
+        url: "/ask",
+        body: { root, question: trimmed },
+        onEvent: (event) => setEvents((previous) => [...previous, event]),
+        onText: (delta, replace) =>
+          setStreaming((previous) => (replace ? delta : previous + delta)),
+        signal: controller.current.signal,
+      });
+
+      if (status.status === "cancelled") {
+        // 超时和用户主动停是同一个状态、不同的原因：
+        // 前者要给重试入口，后者一个字都不用说
+        if (status.cancelReason === "timeout") {
+          setNotice("任务超时已中止");
+          setRetryable(trimmed);
+        }
+        return;
+      }
 
       if (status.status === "failed") {
         setNotice(`执行失败：${status.error ?? "未知错误"}`);
+        setRetryable(trimmed);
         return;
       }
       setResult(status.result);
     } catch (error) {
+      // 用户自己点的停止不是故障，不该弹红字
+      if (error instanceof TaskCancelled) return;
       setNotice(describeError(error));
+      setRetryable(trimmed);
     } finally {
       setFinishedAt(Date.now());
       setBusy(false);
     }
   };
+
+  const stop = () => controller.current?.abort();
 
   const started = startedAt !== undefined;
 
@@ -113,12 +143,27 @@ export function AskPanel({ root }: { root: string }) {
             ))}
           </div>
         </div>
-        <button className="primary-button" onClick={ask} disabled={busy}>
-          {busy ? "查证中…" : "提问 →"}
-        </button>
+        {busy ? (
+          <button className="primary-button" onClick={stop}>
+            停止生成
+          </button>
+        ) : (
+          <button className="primary-button" onClick={() => void ask()}>
+            提问 →
+          </button>
+        )}
       </section>
 
-      {notice && <div className="notice">{notice}</div>}
+      {notice && (
+        <div className="notice">
+          {notice}
+          {retryable && (
+            <button type="button" className="inline-retry" onClick={() => void ask(retryable)}>
+              重试
+            </button>
+          )}
+        </div>
+      )}
 
       {started && (
         <ActivityLog

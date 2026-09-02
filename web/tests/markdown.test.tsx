@@ -11,6 +11,15 @@ import { Markdown, StreamingMarkdown } from "../src/Markdown";
 
 const html = (text: string) => renderToStaticMarkup(<Markdown text={text} />);
 
+/**
+ * 剥掉标签只看文字。
+ *
+ * 断言"内容在不在"时必须用它：语法高亮会把 `const a = 1` 切成
+ * 三个 span，用整串正则去匹配原始 HTML 一定不中——**那是断言写错了，
+ * 不是实现坏了**。断言"结构对不对"时才直接看 HTML。
+ */
+const text = (markup: string) => markup.replace(/<[^>]+>/g, "");
+
 describe("Markdown 渲染", () => {
   it("表格渲染成 table，而不是一堆竖线", () => {
     const output = html(
@@ -83,5 +92,105 @@ describe("流式渲染", () => {
   it("流式期间同样转义 HTML", () => {
     const output = stream("正在写 <script>alert(1)</script>");
     assert.equal(output.includes("<script>"), false);
+  });
+});
+
+/**
+ * 代码围栏。
+ *
+ * 这块的难点不在解析，在**流式**：代码块内部允许空行，而分块边界
+ * 原本就是按空行切的。切在围栏中间会留下半截未闭合的围栏，
+ * 它会把后面所有内容一路吃到结尾——**表格写到一半是局部重排，
+ * 围栏写到一半是全局污染。**
+ */
+describe("代码围栏", () => {
+  it("渲染成 pre + code，语言写进 data-lang", () => {
+    const output = html("```ts\nconst a = 1;\n```");
+
+    assert.match(output, /<pre class="code-block" data-lang="ts">/);
+    assert.match(output, /<code>/);
+  });
+
+  it("围栏内的内容是字面文本，不当 Markdown 解析", () => {
+    // 这三行在正文里分别是表格、标题、列表，在代码块里全是代码
+    const output = html("```\n| a | b |\n|---|---|\n# 不是标题\n- 不是列表\n```");
+
+    assert.equal(output.includes("<table>"), false);
+    assert.equal(output.includes("<h3>"), false);
+    assert.equal(output.includes("<li>"), false);
+    assert.match(output, /# 不是标题/);
+  });
+
+  it("代码里的 HTML 照样转义", () => {
+    const output = html('```tsx\nconst x = <script>alert(1)</script>;\n```');
+
+    assert.equal(output.includes("<script>"), false);
+    assert.match(output, /&lt;script&gt;/);
+  });
+
+  it("认得的语言才高亮，不认得的原样输出", () => {
+    const highlighted = html("```ts\nconst a = 1; // 注释\n```");
+    assert.match(highlighted, /tok-keyword/);
+    assert.match(highlighted, /tok-comment/);
+
+    // 猜错语言比不高亮更糟，所以只认白名单里的
+    const plain = html("```rust\nlet a = 1; // 注释\n```");
+    assert.equal(plain.includes("tok-keyword"), false);
+    assert.match(plain, /let a = 1/);
+  });
+
+  it("未闭合的围栏不吞掉整篇——写到一半也要能看", () => {
+    const output = html("```ts\nconst a = 1;");
+
+    assert.match(output, /<pre class="code-block"/);
+    assert.match(text(output), /const a = 1/);
+  });
+});
+
+describe("流式下的代码围栏", () => {
+  const stream = (text: string, done = false) =>
+    renderToStaticMarkup(<StreamingMarkdown text={text} done={done} />);
+
+  it("代码块内部的空行不会被当成安全切点", () => {
+    // 这是加围栏之后 lastIndexOf("\n\n") 立刻失效的场景：
+    // 从最后一个空行切开，settled 里会留下一个没闭合的 ```
+    const output = stream("前言。\n\n```ts\nconst a = 1;\n\nconst b = 2;");
+
+    assert.match(output, /<p>前言。<\/p>/, "围栏之前的内容照常成块");
+    // 整个未闭合的代码块留在 pending 里，而且已经长得像代码块
+    assert.match(output, /streaming-code/);
+    assert.match(text(output), /const b = 2/);
+    // 关键：settled 部分不该出现被截断的代码块
+    assert.equal(
+      (output.match(/<pre class="code-block"/g) ?? []).length,
+      1,
+      "只该有一个代码块，不能被空行切成两个",
+    );
+  });
+
+  it("正在写的代码块就用代码块的样子显示", () => {
+    const output = stream("说明。\n\n```ts\nconst a = 1;");
+
+    // 拿 <p> 渲染再在闭合那一刻换成 <pre>，等于把「不中途重排」
+    // 的努力在最后一帧全还回去
+    assert.match(output, /streaming-code/);
+    assert.equal(output.includes("streaming-pending"), false);
+    assert.match(output, /streaming-cursor/);
+  });
+
+  it("围栏闭合并跟上空行后，代码块进入已成块部分", () => {
+    const output = stream("```ts\nconst a = 1;\n```\n\n接下来");
+
+    assert.match(output, /<pre class="code-block" data-lang="ts">/);
+    assert.match(output, /streaming-pending/);
+    assert.match(output, /接下来/);
+  });
+
+  it("围栏里出现空行时不会误判成两个块", () => {
+    const output = stream("```ts\nconst a = 1;\n\nconst b = 2;\n```\n\n收尾");
+
+    assert.equal((output.match(/<pre class="code-block"/g) ?? []).length, 1);
+    assert.match(text(output), /const a = 1/);
+    assert.match(text(output), /const b = 2/);
   });
 });

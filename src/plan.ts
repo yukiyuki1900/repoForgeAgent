@@ -27,7 +27,7 @@ export type Intent = "full-audit" | "dependency" | "architecture" | "quality" | 
  * 循环依赖 findings 是报告的必填内容，跳过它们等于产出一份残缺却看不出残缺的报告。
  * 何况两者合计 17ms，省下来也没有意义。
  */
-export type OptionalNode = "analyzeArchitecture" | "frontend" | "narrate";
+export type OptionalNode = "analyzeArchitecture" | "deadExports" | "narrate";
 
 export interface PlanDecision {
   node: string;
@@ -75,18 +75,18 @@ const INTENT_RULES: Array<{ intent: Intent; pattern: RegExp }> = [
 
 /** 每种意图需要哪些可选节点 */
 const PROFILES: Record<Intent, OptionalNode[]> = {
-  "full-audit": ["analyzeArchitecture", "frontend", "narrate"],
+  "full-audit": ["analyzeArchitecture", "deadExports", "narrate"],
   // 只问环：架构图、前端专项、架构叙述都不是答案的一部分
   dependency: [],
   architecture: ["analyzeArchitecture", "narrate"],
-  quality: ["frontend"],
+  quality: ["deadExports"],
   // 检索要的是「哪几个文件」，一段架构散文帮不上忙
   search: [],
 };
 
 const WHY_NEEDED: Record<OptionalNode, string> = {
   analyzeArchitecture: "本次意图需要模块聚合与架构图",
-  frontend: "本次意图需要前端专项检查",
+  deadExports: "本次意图需要检查未使用的导出",
   narrate: "本次意图需要模型给出解释性叙述",
 };
 
@@ -99,7 +99,7 @@ export function planExecution(input: PlanInput): ExecutionPlan {
   if (!input.hasModel) wanted.delete("narrate");
 
   const decisions: PlanDecision[] = (
-    ["analyzeArchitecture", "frontend", "narrate"] as OptionalNode[]
+    ["analyzeArchitecture", "deadExports", "narrate"] as OptionalNode[]
   ).map((node) => ({
     node,
     run: wanted.has(node),

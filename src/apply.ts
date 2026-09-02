@@ -1,12 +1,22 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { ts, type ImportDeclaration, type Project } from "ts-morph";
+import type { ImportDeclaration } from "ts-morph";
 import { analyzeCycles } from "./analyzers.js";
 import { extractGraph, openSemanticProject } from "./graph.js";
 import type { FileNode, Finding, RelationEdge } from "./model.js";
 import { planTypeOnlyRefactor, type ImportCandidate, type RefactorPlan } from "./refactor.js";
 import { scanFiles } from "./scanner.js";
+import {
+  captureDiff,
+  collectDiagnostics,
+  introducedSince,
+  preflight,
+  rollback,
+  writeArtifacts,
+  type DiagnosticNote,
+} from "./verify.js";
+
+export type { DiagnosticNote };
 
 /**
  * 把 `import type` 改造真正写进目标仓库，并自证改对了。
@@ -44,13 +54,6 @@ export interface AppliedEdit {
 
 export interface SkippedEdit extends AppliedEdit {
   reason: string;
-}
-
-export interface DiagnosticNote {
-  file: string;
-  line: number;
-  code: number;
-  message: string;
 }
 
 export interface ApplyResult {
@@ -131,8 +134,8 @@ export async function applyTypeOnlyRefactor(options: ApplyOptions): Promise<Appl
 
   // ── 第一层验证：类型 ────────────────────────────────
   const typeStart = Date.now();
-  const baseline = collectErrors(semantic.project);
-  step(`类型基线：${baseline.size} 条已有错误`);
+  const baseline = collectDiagnostics(semantic.project);
+  step(`类型基线：${baseline.total} 条已有错误`);
 
   const edits: AppliedEdit[] = [];
   const touched = new Map<string, string>();
@@ -153,15 +156,15 @@ export async function applyTypeOnlyRefactor(options: ApplyOptions): Promise<Appl
     return { status: "aborted", plan, edits: [], skipped, reason: "没有一条 import 能重新定位" };
   }
 
-  const after = collectErrors(semantic.project);
-  const introduced = [...after].filter(([key]) => !baseline.has(key)).map(([, note]) => note);
+  const after = collectDiagnostics(semantic.project);
+  const introduced = introducedSince(baseline, after);
   const typecheck = {
-    baselineErrors: baseline.size,
-    afterErrors: after.size,
+    baselineErrors: baseline.total,
+    afterErrors: after.total,
     introduced,
     elapsedMs: Date.now() - typeStart,
   };
-  step(`类型检查：${after.size} 条错误，新增 ${introduced.length} 条（${typecheck.elapsedMs}ms）`);
+  step(`类型检查：${after.total} 条错误，新增 ${introduced.length} 条（${typecheck.elapsedMs}ms）`);
 
   if (introduced.length > 0) {
     // 还没写盘，直接放弃即可，不需要回滚
@@ -198,15 +201,18 @@ export async function applyTypeOnlyRefactor(options: ApplyOptions): Promise<Appl
     ? undefined
     : `实测剩余 ${actual} 个环，与预测的 ${plan.cyclesAfter} 个不一致，已还原`;
 
-  const output = writeArtifacts(root, {
-    status,
-    plan,
-    edits,
-    skipped,
-    typecheck,
-    cycles: cycleReport,
+  const output = writeArtifacts(root, "refactors", {
     diff,
-    reason,
+    report: renderVerifyReport({
+      status,
+      plan,
+      edits,
+      skipped,
+      typecheck,
+      cycles: cycleReport,
+      diff,
+      reason,
+    }),
   });
 
   if (!matched) {
@@ -260,91 +266,6 @@ function locateDeclaration(
   );
 }
 
-// ── git ───────────────────────────────────────────────
-
-function git(root: string, args: string[]): string {
-  return execFileSync("git", ["-C", root, ...args], {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-/**
- * 写入前的安全门。
- *
- * 只检查**将要改动的那几个文件**，不要求整个工作区干净——分析本身会在
- * 目标仓库生成 `.reposurgeon/`，按整树判断会导致第二次运行永远被拒。
- */
-function preflight(root: string, targets: string[]): { ok: boolean; reason?: string } {
-  try {
-    git(root, ["rev-parse", "--is-inside-work-tree"]);
-  } catch {
-    return { ok: false, reason: `${root} 不在 git 仓库里，没有可靠的回滚手段，拒绝写入` };
-  }
-
-  const untracked: string[] = [];
-  for (const target of targets) {
-    try {
-      git(root, ["ls-files", "--error-unmatch", "--", target]);
-    } catch {
-      untracked.push(target);
-    }
-  }
-  if (untracked.length > 0) {
-    return { ok: false, reason: `以下文件未被 git 跟踪，无法回滚：${untracked.join("、")}` };
-  }
-
-  const dirty = git(root, ["status", "--porcelain", "--", ...targets]).trim();
-  if (dirty) {
-    const list = dirty
-      .split("\n")
-      .map((line) => line.slice(3))
-      .join("、");
-    return { ok: false, reason: `目标文件有未提交的改动，回滚会覆盖你的工作：${list}` };
-  }
-
-  return { ok: true };
-}
-
-function captureDiff(root: string, targets: string[]): string {
-  try {
-    return git(root, ["diff", "--unified=3", "--", ...targets]);
-  } catch {
-    return "";
-  }
-}
-
-function rollback(root: string, targets: string[]): void {
-  git(root, ["checkout", "--", ...targets]);
-}
-
-// ── 类型诊断 ───────────────────────────────────────────
-
-/**
- * 收集全量错误级诊断，用「文件 + 行 + 错误码 + 文本」作指纹。
- *
- * `import type` 只在原行插入一个关键字，不改变任何行号，
- * 所以前后两次的行号可以直接比对。
- */
-function collectErrors(project: Project): Map<string, DiagnosticNote> {
-  const notes = new Map<string, DiagnosticNote>();
-
-  for (const diagnostic of project.getPreEmitDiagnostics()) {
-    if (diagnostic.getCategory() !== ts.DiagnosticCategory.Error) continue;
-
-    const file = diagnostic.getSourceFile()?.getFilePath() ?? "<unknown>";
-    const line = diagnostic.getLineNumber() ?? 0;
-    const code = diagnostic.getCode();
-    // ts-morph 把 messageText 包了一层，展平要用原始的 compiler 对象
-    const message = ts.flattenDiagnosticMessageText(diagnostic.compilerObject.messageText, " ");
-
-    notes.set(`${file}#${line}#${code}#${message}`, { file, line, code, message });
-  }
-
-  return notes;
-}
-
 // ── 产物 ──────────────────────────────────────────────
 
 interface ArtifactInput {
@@ -356,26 +277,6 @@ interface ArtifactInput {
   cycles: NonNullable<ApplyResult["cycles"]>;
   diff: string;
   reason?: string;
-}
-
-function writeArtifacts(
-  root: string,
-  input: ArtifactInput,
-): { outputDir: string; diffPath: string; reportPath: string } {
-  const stamp = new Date()
-    .toISOString()
-    .replace(/[-:]/g, "")
-    .replace(/\.\d+Z$/, "Z");
-  const outputDir = path.join(root, ".reposurgeon", "refactors", stamp);
-  fs.mkdirSync(outputDir, { recursive: true });
-
-  const diffPath = path.join(outputDir, "refactor.diff");
-  const reportPath = path.join(outputDir, "verify-report.md");
-
-  fs.writeFileSync(diffPath, input.diff, "utf8");
-  fs.writeFileSync(reportPath, renderVerifyReport(input), "utf8");
-
-  return { outputDir, diffPath, reportPath };
 }
 
 function renderVerifyReport(input: ArtifactInput): string {

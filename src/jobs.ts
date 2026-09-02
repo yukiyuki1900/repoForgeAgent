@@ -7,7 +7,7 @@ import type { Model } from "./llm.js";
 import { formatPlan, planTypeOnlyRefactor, type RefactorPlan } from "./refactor.js";
 import { scanFiles } from "./scanner.js";
 import type { TaskEvent } from "./tasks.js";
-import { buildIndex } from "./tools.js";
+import { buildIndex, PREVIEW, previewOf } from "./tools.js";
 
 /**
  * 任务体：三种模式各自「干什么」。
@@ -97,6 +97,7 @@ export async function runAskJob(
   emit: Emit,
   maxSteps?: number,
   onTextDelta?: (delta: string) => void,
+  signal?: AbortSignal,
 ): Promise<AskResult> {
   emit({ channel: "step", label: "建立索引" });
   const index = await buildIndex(root);
@@ -111,8 +112,19 @@ export async function runAskJob(
     index,
     question,
     maxSteps,
-    onToolCall: (call) => emit({ channel: "tool", label: call.name, detail: call.summary }),
+    onToolCall: (call) =>
+      emit({
+        channel: "tool",
+        label: call.name,
+        detail: call.summary,
+        tool: {
+          args: previewOf(call.args, PREVIEW.args).text,
+          result: call.result,
+          resultOmitted: call.resultOmitted,
+        },
+      }),
     onTextDelta,
+    signal,
   });
 }
 

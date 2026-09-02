@@ -1,0 +1,27 @@
+{
+  "title": "未使用的导出清理：两种改法按风险分流，有副作用的初始化拒绝删除",
+  "status": "expected-pass",
+  "why": "18 号测的是「能不能找出来」，这里测的是「敢不敢动」。四个死导出走四条不同的路：deadHelper 文件内外都没人用且求值无副作用，整条删除；internalPath 还被同文件的 readConfig 使用，只能去掉 export 关键字；pad 同样只能 unexport，但它是函数声明，走的是与变量不同的改写分支——这条分支最初没有任何用例覆盖，是变异测试暴露出来的；registered 的初始化是一次函数调用，删掉意味着少执行一次 register()，静态上无法证明这没有影响，因此拒绝。exportsAfter 是写盘后要被对账的那个断言——判据是完全相等而不是「变少了」，后者只要删掉任何一个导出就成立。",
+  "expect": {
+    "deadExports": {
+      "deadCount": 4,
+      "dead": [
+        { "file": "src/utils.ts", "symbol": "deadHelper", "usedInFile": false },
+        { "file": "src/config.ts", "symbol": "internalPath", "usedInFile": true },
+        { "file": "src/format.ts", "symbol": "pad", "usedInFile": true },
+        { "file": "src/effects.ts", "symbol": "registered", "usedInFile": false }
+      ],
+      "notDead": ["main", "activeHelper", "readConfig", "activeFlag", "render"],
+      "removal": {
+        "exportsBefore": 9,
+        "exportsAfter": 6,
+        "edits": [
+          { "file": "src/utils.ts", "symbol": "deadHelper", "action": "delete-declaration" },
+          { "file": "src/config.ts", "symbol": "internalPath", "action": "unexport" },
+          { "file": "src/format.ts", "symbol": "pad", "action": "unexport" }
+        ],
+        "blocked": [{ "symbol": "registered", "reasonContains": "副作用" }]
+      }
+    }
+  }
+}

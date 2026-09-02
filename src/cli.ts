@@ -4,10 +4,14 @@ import { Command } from "commander";
 import { analyzeCycles } from "./analyzers.js";
 import { applyTypeOnlyRefactor, formatApplyResult } from "./apply.js";
 import { askCodebase, formatAskResult } from "./ask.js";
+import { planDeadExportRemoval } from "./deadexports.js";
 import { loadEnv } from "./env.js";
+import { applyProposal, formatExecution } from "./execute.js";
 import { resolveModel } from "./llm.js";
 import { buildIndex } from "./tools.js";
 import { extractGraph } from "./graph.js";
+import { applyDeadExportRemoval, formatPruneResult } from "./prune.js";
+import { formatProposalFlow, proposeAndValidate } from "./proposalflow.js";
 import { formatPlan, planTypeOnlyRefactor } from "./refactor.js";
 import { scanFiles } from "./scanner.js";
 import { runAnalysis, type ProgressEvent, type WorkflowState } from "./workflow.js";
@@ -21,6 +25,9 @@ interface AnalyzeOptions {
 interface RefactorOptions {
   dryRun?: boolean;
   apply?: boolean;
+  deadExports?: boolean;
+  propose?: boolean;
+  execute?: string;
 }
 
 interface AskOptions {
@@ -109,7 +116,13 @@ program
   .command("refactor")
   .argument("<directory>", "本地仓库目录")
   .option("--dry-run", "只输出改造计划，不写入任何文件（默认）")
-  .option("--apply", "写入改动，并用类型检查与环数对账验证；验证失败自动回滚")
+  .option("--apply", "写入改动，并用类型检查与结构对账验证；验证失败自动回滚")
+  .option("--dead-exports", "改为清理未使用的导出（默认是用 import type 打破循环依赖）")
+  .option("--propose", "让模型对「规则主动放弃的那部分」提方案，只列出不执行")
+  .option(
+    "--execute <序号>",
+    "执行 --propose 列出的第 N 条方案。刻意只接受单个序号，没有「全部执行」",
+  )
   .action(async (directory: string, options: RefactorOptions) => {
     const root = path.resolve(directory);
     const { files, contents } = await scanFiles(root);
@@ -118,6 +131,16 @@ program
       throw new Error(`在 ${root} 下没有找到可分析的源码文件`);
     }
     console.log(`  ✓ 扫描 ${files.length} 个文件`);
+
+    if (options.propose) {
+      await runPropose(root, files, contents, options.execute);
+      return;
+    }
+
+    if (options.deadExports) {
+      await runDeadExports(root, files, contents, Boolean(options.apply));
+      return;
+    }
 
     const { edges } = extractGraph(root, files, contents);
     const cycles = analyzeCycles(files, edges);
@@ -152,6 +175,136 @@ program
       process.exitCode = 1;
     }
   });
+
+/**
+ * 提方案的命令行分支。
+ *
+ * 和前两条链路的交互**刻意不同**：那两条是 `--apply` 一把梭，因为改的是
+ * 规则判定安全的机械变换。这条改的正是工具判定为不安全、主动放弃的东西，
+ * 所以拆成两步——先列出，人挑一条，`--execute <序号>` 执行那一条。
+ *
+ * **没有「全部执行」，这是设计，不是没来得及做。**
+ */
+async function runPropose(
+  root: string,
+  files: Awaited<ReturnType<typeof scanFiles>>["files"],
+  contents: Map<string, string>,
+  execute?: string,
+): Promise<void> {
+  const model = resolveModel();
+  if (!model) {
+    console.log("需要配置模型才能提方案：设置 OPENAI_API_KEY 或 ANTHROPIC_API_KEY 后重试");
+    process.exitCode = 1;
+    return;
+  }
+
+  const flow = await proposeAndValidate({
+    root,
+    files,
+    contents,
+    model,
+    onStep: (message) => console.log(`  · ${message}`),
+  });
+
+  console.log(`\n${formatProposalFlow(flow)}`);
+
+  if (execute === undefined) return;
+
+  const index = Number.parseInt(execute, 10);
+  const chosen = flow.validation.accepted[index - 1];
+  if (!Number.isInteger(index) || !chosen) {
+    console.log(
+      `\n序号 ${execute} 无效：当前只有 ${flow.validation.accepted.length} 条通过校验的方案`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`\n执行第 ${index} 条…`);
+  const result = await applyProposal({
+    root,
+    files,
+    contents,
+    proposal: chosen,
+    onStep: (message) => console.log(`  · ${message}`),
+  });
+
+  console.log(`\n${formatExecution(result)}`);
+
+  // 回滚与放弃都不是崩溃，但不该被 CI 当成成功
+  if (result.status === "rolled-back" || result.status === "aborted") {
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * 死导出清理的命令行分支。
+ *
+ * 和拆环走同一套交互：不加 `--apply` 只出计划，加了才写盘并验证。
+ * 区别只在第二层验证拿什么对账——那边是环数，这里是导出总数。
+ */
+async function runDeadExports(
+  root: string,
+  files: Awaited<ReturnType<typeof scanFiles>>["files"],
+  contents: Map<string, string>,
+  apply: boolean,
+): Promise<void> {
+  if (!apply) {
+    const plan = planDeadExportRemoval({ root, files, contents });
+    console.log(`  ✓ 检出 ${plan.exportsBefore} 个具名导出\n`);
+    console.log(formatDeadExportPlan(plan));
+    console.log("\n确认无误后加 --apply 写入（会先做类型检查与导出数对账，不通过自动回滚）");
+    return;
+  }
+
+  const result = await applyDeadExportRemoval({
+    root,
+    files,
+    contents,
+    onStep: (message) => console.log(`  · ${message}`),
+  });
+
+  console.log(`\n${formatPruneResult(result)}`);
+
+  // 回滚与放弃都不是崩溃，但不该被 CI 当成成功
+  if (result.status === "rolled-back" || result.status === "aborted") {
+    process.exitCode = 1;
+  }
+}
+
+function formatDeadExportPlan(plan: ReturnType<typeof planDeadExportRemoval>): string {
+  const lines = ["─".repeat(60)];
+
+  if (plan.edits.length === 0) {
+    lines.push("没有可安全清理的导出");
+  } else {
+    lines.push(
+      `可清理 ${plan.edits.length} 个导出，${plan.exportsBefore} → ${plan.exportsAfter}`,
+      "",
+    );
+    for (const edit of plan.edits) {
+      const how = edit.action === "unexport" ? "去掉 export" : "删除整条声明";
+      lines.push(`  ${edit.file}:${edit.line}  ${edit.symbol}  → ${how}`);
+    }
+  }
+
+  if (plan.testOnly.length > 0) {
+    lines.push("", `${plan.testOnly.length} 个导出只被测试引用（不自动处理）：`);
+    for (const item of plan.testOnly) {
+      lines.push(`  ${item.file}:${item.line}  ${item.symbol}`);
+    }
+  }
+
+  // 「没检出」和「检出了但不敢动」是两回事，后者才是需要人看的
+  if (plan.blocked.length > 0) {
+    lines.push("", `${plan.blocked.length} 个判定该清理但不敢动：`);
+    for (const item of plan.blocked) {
+      lines.push(`  ${item.file}  ${item.symbol}  ${item.reason}`);
+    }
+  }
+
+  return lines.join("\n");
+}
 
 program
   .command("ask")
