@@ -113,6 +113,25 @@
 
 ## 12. 先量再决定路由什么
 
+整条流水线长这样，决策点只有一个：
+
+```
+START → loadRepository → scanFiles → detectStack → plan     ← 决策点
+                                                     │
+                                              parseSemantic
+                                                     │
+                       ┌─────────────┬───────────────┼───────────────┐
+              analyzeArchitecture  dependency     quality      deadExports  ← 条件 fan-out
+                  （可裁剪）        （恒在）       （恒在）        （可裁剪）
+                       └─────────────┴───────────────┴───────────────┘
+                                                     ▼
+                                          retrieveContext              ← 有问题才进
+                                                     ▼
+                                                  narrate              ← 唯一的 LLM 节点，可裁剪
+                                                     ▼
+                                                  render → END
+```
+
 给流水线加决策节点，最容易滑向表演：每个节点前面挂一个条件判断，看起来「很 Agent」，实际一秒都没省。
 
 所以先量。319 文件的 Vue 仓库，一次全量分析约 23 秒：

@@ -12,7 +12,7 @@
 
 ---
 
-## 为什么做这个
+## 它解决什么问题
 
 在一个陌生的前端仓库里，三个问题最常见，也最难靠通读代码回答：
 
@@ -20,13 +20,9 @@
 2. **改这个文件会影响到谁？** 靠全局搜索找引用，会漏掉 alias 导入和动态 `import()`。
 3. **这些循环依赖能修吗？** 知道有环容易，判断哪一条边能安全断开很难。
 
-市面上的 AI 代码工具大多把整个仓库塞进模型上下文，让它「看着办」。这条路在几百个文件的仓库上就会失真：模型会编造不存在的文件、把目录名当成职责、给出无法验证的建议。
+这个项目的做法是**能算出来的绝不问模型**：依赖图用 TypeScript 编译器解析，循环依赖用 Tarjan 算，影响面靠数入边；模型只做两件确定性代码做不了的事——把事实翻译成人话，以及在一组只读工具里自主查证。每一次改造都必须能被编译器证伪，验证不过就自动回滚。
 
-这个项目走另一条路——**能算出来的绝不问模型**：
-
-- 依赖图用 TypeScript 编译器解析，循环依赖用 Tarjan 算，影响面靠数入边
-- 模型只做两件确定性代码做不了的事：把事实翻译成人话，以及在一组只读工具里自主查证
-- 每一次改造都必须能被编译器证伪，验证不过就自动回滚
+设计取舍见 [docs/DESIGN.md](docs/DESIGN.md)。
 
 ## 三种模式
 
@@ -34,7 +30,7 @@
 |---|---|---|---|
 | **分析** `analyze` | 全量审计：依赖图、循环依赖、架构逆向、维护性评分 | 确定性代码 + LLM 解读 | 只读 |
 | **追问** `ask` | 把语义图开放成 9 个只读工具，模型自己查证后回答 | 模型自主 | 只读 |
-| **改造** `refactor` | 两条链路：`import type` 破环、清理未使用的导出；写入并验证 | 确定性代码 | **写盘** |
+| **改造** `refactor` | 三条链路：`import type` 破环、清理未使用的导出、模型提方案 | 前两条确定性代码，第三条模型 | **写盘** |
 
 三种模式都有命令行与 Web 看板两套入口。同一套工具还可以通过 [MCP](#mcp-server) 挂给 Claude Code / Cursor，配套的 [Skill](#skill) 说明该怎么用。
 
@@ -139,7 +135,7 @@ $ pnpm analyze ./your-project --query "有循环依赖吗"
 | 质量与技术债 | — | ✓ | — |
 | 语义检索 | — | — | — |
 
-`dependency` 与 `quality` 恒在——它们的产出是报告的必填内容。被跳过的节点会连同理由写进报告的「执行计划」一节；想跑满加 `--full`。
+`dependency` 与 `quality` 恒在，它们的产出是报告的必填内容。被跳过的节点会连同理由写进报告的「执行计划」一节；想跑满加 `--full`。
 
 ## 追问
 
@@ -169,61 +165,15 @@ $ pnpm ask ./your-project "哪个模块被依赖得最多，它做了哪些事"
 
 工具调用与回答都是流式的，每条调用都标明查的是哪个文件——回答里的每个断言都能据此核对。轮次上限默认 8（`--max-steps` 可调），撞上限时会如实标注并交出已查到的线索。
 
-## MCP Server
-
-同一套工具可以挂给 Claude Code / Cursor，在编辑器里直接问「这个仓库有哪些循环依赖」：
-
-```jsonc
-// Claude Code: ~/.claude/settings.json 的 mcpServers
-// Cursor: .cursor/mcp.json
-{
-  "mcpServers": {
-    "repoforge": {
-      "command": "npx",
-      "args": ["tsx", "/path/to/RepoForgeAgent/src/mcp.ts", "/path/to/your-project"]
-    }
-  }
-}
-```
-
-暴露上面那 9 个只读工具，外加一个 `refreshIndex`（改完代码后重建索引），全部标注 `readOnlyHint: true`。
-
-改造能力**没有**接入 MCP——写盘操作不该藏在一个标着只读的协议出口后面。
-
-## Skill
-
-MCP 给的是**能力**，Skill 给的是**流程**。挂上 MCP 之后模型拿到 9 个工具，但先查什么、查到之后怎么判断，仍然没人告诉它。
-
-[.agents/skills/frontend-repo-checkup](.agents/skills/frontend-repo-checkup/SKILL.md) 把「一个有经验的人会怎么用这套工具」写成了操作手册：先建立全局事实、再定位热点、检查分层是否倒置、判断循环依赖能否自动修、最后产出带行号的行动清单。里面同时写了判断标准与反模式——比如「行数很少但入边极高 = 桶文件」，比如不要产出「建议解耦」这种没有落点的结论。
-
-### 跨客户端
-
-[Agent Skills](https://agentskills.io) 是开放标准，Claude Code、Cursor、VS Code、Codex 都能加载。规范定义的是 skill 目录的结构，**发现路径由各客户端自己定**，所以真身放在中立目录，客户端入口用相对符号链接指过去：
-
-```
-.agents/skills/frontend-repo-checkup/SKILL.md   ← 真身
-.claude/skills/frontend-repo-checkup  ─┐
-.cursor/skills/frontend-repo-checkup  ─┴─► 符号链接
-```
-
-一份内容，改一处两边同时生效。想在**任意项目**里用（而不只是在本仓库里），链到用户级目录：
-
-```bash
-ln -s "$PWD/.agents/skills/frontend-repo-checkup" ~/.claude/skills/
-ln -s "$PWD/.agents/skills/frontend-repo-checkup" ~/.cursor/skills/
-```
-
-`tests/skill.test.ts` 会验证链接没断、三个路径同源、手册里引用的工具与命令真实存在——手册不会被编译，写错一个工具名只有等模型照着做失败了才知道。
-
-### 三个出口
-
-```
-tools.ts  ──►  ask        自己的 agent loop
-          ──►  mcp.ts     别人的编辑器，标准协议
-          ──►  SKILL.md   怎么用才对，标准格式
-```
-
 ## 改造
+
+三条链路，共用同一套验证骨架：git 门禁 → 类型基线对比 → 写入 → 重扫对账 → 不符则回滚。
+
+| | `import type` 破环 | 清理未使用的导出 | 模型提的方案 |
+|---|---|---|---|
+| 命令 | `--apply` | `--dead-exports --apply` | `--propose --execute <n>` |
+| 变换 | 仅用于类型的导入升成 `import type` | 去掉 `export` / 删除整条声明 | 删整个文件 / 降级导出 / 连带删私有依赖 |
+| 全自动 | ✅ | ✅ | ❌ **刻意不提供** |
 
 ```
 $ pnpm refactor ./your-project --apply
@@ -237,29 +187,6 @@ $ pnpm refactor ./your-project --apply
 
 ✓ 改造已应用
 ```
-
-### 三条链路，同一套模板
-
-| | `import type` 破环 | 未使用的导出清理 | 模型提的方案 |
-|---|---|---|---|
-| 命令 | `refactor <repo> --apply` | `refactor <repo> --dead-exports --apply` | `refactor <repo> --propose --execute <n>` |
-| 变换 | 把仅用于类型的导入升成 `import type` | 去掉 `export` / 删除整条声明 | 删整个文件 / 降级导出 / 连带删私有依赖 |
-| 预测由谁给出 | 确定性代码 | 确定性代码 | **模型**（且要先跟静态推算值核对） |
-| 第一层验证 | 类型不新增错误 | 同左 | 同左 |
-| **第二层验证** | 重跑 Tarjan，**环数** == 预测 | 重扫仓库，**导出总数** == 预测 | 导出数 **和** 文件数各自 == 预测 |
-| 不符时 | `git checkout --` 回滚 | 同左 | 同左 |
-| 全自动 | ✅ | ✅ | ❌ **刻意不提供** |
-
-三者共用 [src/verify.ts](src/verify.ts) 的骨架：git 门禁、诊断基线对比、diff 落盘、失败回滚。后两条还共用 [src/prune.ts](src/prune.ts) 的改写原语——**改写动作只有一份实现**，否则两条链路的行为迟早会分叉，而分叉的那一刻两边的验证都还是绿的。
-
-**判据都是「与预测完全相等」而不是「变少了」。** 后者只要删掉任何一个导出就成立，等于没验证。
-
-判定一律从严：
-
-- **拆环** —— 只要有一处引用落在值位置就不改
-- **清理** —— 初始化有副作用的变量、带装饰器的类、所有导出都死掉的文件（移除后不再是 ES module），全部拒绝
-
-任一验证不符就回滚，diff 仍留档供人工复盘。写入前要求目标文件已被 git 跟踪且无未提交改动。
 
 ```
 $ pnpm refactor ./your-project --dead-exports
@@ -276,40 +203,7 @@ $ pnpm refactor ./your-project --dead-exports
   src/effects.ts  registered  初始化表达式可能有副作用，删除会改变运行时行为
 ```
 
-> 清理有级联：删掉 A 之后，只被 A 用过的 B 才变成死代码。一轮不收敛，需要反复跑到没有新改动为止。完整边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)。
-
-### 第三条：模型在哪一层参与
-
-前两条链路模型的参与度是**零**——能算出来的绝不问模型。但它们也划出了一条清晰的空白地带：
-
-```
-死导出跑完后，候选被分成四堆：
-
-  edits      机械上安全      →  工具已自动处理            ← 模型无事可做
-  blocked    检出了但不敢动  ┐
-  testOnly   只被测试引用    ├─  规则主动放弃的部分        ← 模型的战场
-  excluded   被规则排除      ┘
-```
-
-在 `fixtures/18-dead-exports` 上实测：**纯规则一个都处理不了（0 条），11 个候选全部落在模型这边。**
-
-模型不输出代码，输出的是结构化指令 + 一个**可证伪的预测**：改完之后应该少几个导出、少几个文件。
-
-```
-facts.ts     给模型看什么   —— 只给确定性代码算出的事实，截断如实报告
-propose.ts   模型能说什么   —— schema 约束，没有数字预测的方案无法表达
-validate.ts  哪些说了不算   —— 逐条对着 AST 复查，不采信模型说的任何事实
-execute.ts   做完对不对得上 —— 重扫仓库，两个数字各自对账，不符整体回滚
-```
-
-两道对账防的是两件不同的事：
-
-```
-校验时   模型预测   vs  静态计算的期望值   →  模型理解偏差
-执行后   静态计算   vs  重扫仓库的实测值   →  执行偏差
-```
-
-确定性代码本来就能算出 `exportsRemoved` 应该是多少，还要模型预测，是因为**预测的用途不是告诉我们答案，而是检测模型有没有真正理解自己提的方案**。
+第三条链路让模型对「规则主动放弃的那部分」提方案。它输出的不是代码，而是结构化指令加一个可证伪的预测，逐条静态校验后由人挑选执行：
 
 ```
 $ pnpm refactor ./your-project --propose
@@ -327,32 +221,50 @@ $ pnpm refactor ./your-project --propose
     src/x.ts#totallyMadeUp      目标不在候选清单里
 
 逐条复核后用 --execute <序号> 执行其中一条。
-**没有「全部执行」**：这些改动正是工具判定为不安全、主动放弃的那些。
+没有「全部执行」——这些改动正是工具判定为不安全、主动放弃的那些。
 ```
 
-**这条链路不提供全自动执行。** 前两条有，因为那是语义等价的机械变换；这条改的正是工具判定为不安全的东西，人必须先看到方案、预测和风险等级。
-
-被拦下的方案也一并列出——判据可以被质疑，但不能是隐形的。
-
-> ⚠️ 连带删除那一类**不保证行为等价**。类型检查加导出数对账能证明改动是机械正确的，证明不了运行时行为不变；「这个副作用不重要」本来就不是编译器能判定的事。所以那一类风险等级被强制改写为 `high`，这句话也直接写在输出里。
+> ⚠️ 连带删除那一类**不保证行为等价**，风险等级被强制标为 `high`。当前是可回滚的原地修改，安全性来自 git 门禁（目标文件必须已跟踪且无未提交改动）。
 >
-> 另外：当前是**可回滚的原地修改，不是沙箱隔离**。安全性来自 git 门禁（目标文件必须已跟踪且无未提交改动）。真正的沙箱见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md) 的路线图。
->
-> 完整边界设计见 [docs/PROPOSAL.md](docs/PROPOSAL.md)。
+> 清理有级联：删掉 A 之后，只被 A 用过的 B 才变成死代码，一轮不收敛。完整边界见 [docs/LIMITATIONS.md](docs/LIMITATIONS.md)，方案链路的设计见 [docs/PROPOSAL.md](docs/PROPOSAL.md)。
 
-## 技术栈
+## MCP Server
 
-| 依赖 | 用途 |
-|---|---|
-| **ts-morph / TypeScript Compiler API** | 建立符号与依赖图；模块解析交给编译器，tsconfig `paths`、`baseUrl`、index 解析全部免费获得 |
-| **LangGraph** | 分析流水线编排：并行 fan-out / fan-in、状态归并、条件路由、节点级进度事件 |
-| **Vercel AI SDK** | `generateObject` 拿结构化输出，`streamText` + `tools` 跑工具调用循环 |
-| **MCP SDK** | 把工具集通过标准协议交给 Claude Code / Cursor |
-| **@vue/compiler-sfc** | 可选依赖，`.vue` 抽出 script 走同一条 AST 路径 |
-| **better-sqlite3** | 可选依赖，供看板加载命令行跑出的历史结果 |
-| **React + Vite** | Web 看板 |
+同一套工具可以挂给 Claude Code / Cursor，在编辑器里直接问「这个仓库有哪些循环依赖」：
 
-每项选型的理由与代价见 [docs/DESIGN.md](docs/DESIGN.md)。
+```jsonc
+// Claude Code: ~/.claude/settings.json 的 mcpServers
+// Cursor: .cursor/mcp.json
+{
+  "mcpServers": {
+    "repoforge": {
+      "command": "npx",
+      "args": ["tsx", "/path/to/RepoForgeAgent/src/mcp.ts", "/path/to/your-project"]
+    }
+  }
+}
+```
+
+暴露上面那 9 个只读工具，外加一个 `refreshIndex`（改完代码后重建索引），全部标注 `readOnlyHint: true`。改造能力**没有**接入 MCP——写盘操作不该藏在一个标着只读的协议出口后面。
+
+## Skill
+
+MCP 给的是**能力**，Skill 给的是**流程**。[.agents/skills/frontend-repo-checkup](.agents/skills/frontend-repo-checkup/SKILL.md) 把「一个有经验的人会怎么用这套工具」写成了操作手册：先建立全局事实、再定位热点、检查分层是否倒置、判断循环依赖能否自动修、最后产出带行号的行动清单。
+
+[Agent Skills](https://agentskills.io) 是开放标准，但发现路径由各客户端自己定，所以真身放在中立目录，客户端入口用相对符号链接指过去：
+
+```
+.agents/skills/frontend-repo-checkup/SKILL.md   ← 真身
+.claude/skills/frontend-repo-checkup  ─┐
+.cursor/skills/frontend-repo-checkup  ─┴─► 符号链接
+```
+
+想在**任意项目**里用（而不只是在本仓库里），链到用户级目录：
+
+```bash
+ln -s "$PWD/.agents/skills/frontend-repo-checkup" ~/.claude/skills/
+ln -s "$PWD/.agents/skills/frontend-repo-checkup" ~/.cursor/skills/
+```
 
 ## 架构
 
@@ -377,24 +289,15 @@ $ pnpm refactor ./your-project --propose
                           同一套工具，标准协议出口
 ```
 
-分析流水线的节点编排：
-
-```
-START → loadRepository → scanFiles → detectStack → plan     ← 决策点
-                                                     │
-                                              parseSemantic
-                                                     │
-                       ┌─────────────┬───────────────┼───────────────┐
-              analyzeArchitecture  dependency     quality      deadExports  ← 条件 fan-out
-                  （可裁剪）        （恒在）       （恒在）        （可裁剪）
-                       └─────────────┴───────────────┴───────────────┘
-                                                     ▼
-                                          retrieveContext              ← 有问题才进
-                                                     ▼
-                                                  narrate              ← 唯一的 LLM 节点，可裁剪
-                                                     ▼
-                                                  render → END
-```
+| 依赖 | 用途 |
+|---|---|
+| **ts-morph / TypeScript Compiler API** | 建立符号与依赖图，模块解析交给编译器 |
+| **LangGraph** | 分析流水线编排：并行 fan-out / fan-in、条件路由、节点级进度 |
+| **Vercel AI SDK** | 结构化输出与工具调用循环 |
+| **MCP SDK** | 把工具集通过标准协议交给编辑器 |
+| **@vue/compiler-sfc** | 可选依赖，`.vue` 抽出 script 走同一条 AST 路径 |
+| **better-sqlite3** | 可选依赖，供看板加载历史结果 |
+| **React + Vite** | Web 看板 |
 
 ## 开发
 
@@ -406,7 +309,7 @@ pnpm format        # 代码格式化
 pnpm stop          # 终止残留的开发进程
 ```
 
-评估分两层：`pnpm eval` 校验**判断准不准**（fixture 驱动，含专门保护误报率的用例）；`pnpm test` 校验**动作对不对**（建真实 git 仓库写盘、桩模型跑 tool-calling 循环、真实 MCP 客户端握手、前后端字段契约）。
+`pnpm eval` 校验判断准不准（fixture 驱动），`pnpm test` 校验动作对不对（真实 git 仓库写盘、桩模型跑工具调用循环、真实 MCP 客户端握手、前后端字段契约）。
 
 ```
 src/
@@ -420,9 +323,13 @@ src/
 ├── narrate.ts       上下文压缩、环切点计算、LLM 架构解读
 ├── retrieval.ts     查询计划与混合检索
 ├── tools.ts         暴露给模型的只读工具集
-├── ask.ts           tool-calling 循环、流式输出、轮次控制
+├── ask.ts           工具调用循环、流式输出、轮次控制
 ├── mcp.ts           MCP Server：同一套工具的标准协议出口
 ├── refactor.ts      import type 拆环的检测与模拟
+├── facts.ts         给模型看的事实包
+├── propose.ts       方案的 schema 约束
+├── validate.ts      方案的静态校验
+├── execute.ts       方案的执行与对账
 ├── apply.ts         写入、两层验证、失败回滚与产物留档
 ├── tasks.ts         三种模式共用的任务状态机与 SSE
 ├── jobs.ts          三种模式各自的任务体
@@ -432,7 +339,7 @@ src/
 web/                 React + Vite 看板
 fixtures/            回归评估用例
 tests/               端到端与契约测试
-.claude/skills/      前端仓库体检的操作手册
+.agents/skills/      前端仓库体检的操作手册
 ```
 
 ## 文档

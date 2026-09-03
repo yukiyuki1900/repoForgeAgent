@@ -19,7 +19,11 @@ web/node_modules/
 # TypeScript 增量编译缓存
 *.tsbuildinfo
 
-# 测试沙箱（apply 用例会在里面建临时 git 仓库）
+# 测试沙箱（e2e 用例会在里面建临时 git 仓库）。
+# 正常跑完由 afterEach 清理，但测试被中断时会残留，所以必须忽略——
+# 否则一个嵌套的 git 仓库会被顺手提交进来。
 .tmp-apply-test/
 .tmp-plan-test/
 .tmp-jobs-test/
+.tmp-prune-test/
+.tmp-execute-test/
