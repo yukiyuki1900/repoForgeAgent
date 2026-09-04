@@ -22,6 +22,7 @@ import {
 } from "./tasks.js";
 import { runAnalysis } from "./workflow.js";
 import { TIMEOUTS } from "./limits.js";
+import { parseTraceparent, type TraceContext } from "./trace.js";
 
 // 必须在读取任何配置之前加载
 loadEnv();
@@ -43,12 +44,32 @@ const router = new Router();
 
 app.use(async (ctx, next) => {
   ctx.set("Access-Control-Allow-Origin", WEB_ORIGIN);
-  ctx.set("Access-Control-Allow-Headers", "Content-Type");
+  // `traceparent` 和 `Last-Event-ID` **都不在 CORS 安全清单里**，不显式放行
+  // 浏览器会在预检阶段就把它们剥掉——而且不报错，表现是「排障编号莫名其妙
+  // 对不上」「重连总是从头补」。顺带一提，EventSource 连发这两个头的机会都没有
+  ctx.set("Access-Control-Allow-Headers", "Content-Type,traceparent,Last-Event-ID");
   ctx.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  // 跨域下 JS 默认只读得到几个安全响应头，不 expose 的话前端拿不到编号
+  ctx.set("Access-Control-Expose-Headers", "X-Trace-Id");
   if (ctx.method === "OPTIONS") {
     ctx.status = 204;
     return;
   }
+  await next();
+});
+
+/**
+ * 贯穿全局的 trace 上下文。
+ *
+ * 放在最外层是因为**排障编号必须对所有响应都成立**，包括 404、500、
+ * 以及任何还没走到业务代码就失败的请求——恰恰是那些最需要能被追溯。
+ * 逐个路由去加，一定会漏掉刚加的那个。
+ */
+app.use(async (ctx, next) => {
+  const header = ctx.headers.traceparent;
+  const trace = parseTraceparent(Array.isArray(header) ? header[0] : header);
+  ctx.state.trace = trace;
+  ctx.set("X-Trace-Id", trace.traceId);
   await next();
 });
 
@@ -66,6 +87,7 @@ router.post("/analysis", (ctx) => {
   const record = startTask({
     kind: "analyze",
     root,
+    traceId: traceOf(ctx),
     timeoutMs: TIMEOUTS.task.analyze,
     run: async ({ emit, signal }) => {
       const state = await runAnalysis(root, {
@@ -113,6 +135,7 @@ router.post("/refactor", (ctx) => {
   const record = startTask({
     kind: "refactor",
     root,
+    traceId: traceOf(ctx),
     meta: { apply: shouldApply },
     timeoutMs: TIMEOUTS.task.refactor,
     run: ({ emit }) => runRefactorJob(root, shouldApply, emit),
@@ -147,6 +170,7 @@ router.post("/ask", (ctx) => {
   const record = startTask({
     kind: "ask",
     root,
+    traceId: traceOf(ctx),
     meta: { question },
     timeoutMs: TIMEOUTS.task.ask,
     run: ({ emit, emitText, signal }) =>
@@ -169,7 +193,7 @@ router.get("/tasks/:taskId", (ctx) => {
 /**
  * 停止一个任务。
  *
- * 必须有一个真实的服务端接口——前端把 EventSource 关掉只是「不看了」，
+ * 必须有一个真实的服务端接口——前端把连接断开只是「不看了」，
  * 后台该跑还跑、该烧的 token 一个不少。**「停止生成」如果只做前端，
  * 那是障眼法。**
  *
@@ -335,6 +359,11 @@ router.get("/repo/runs/latest", (ctx) => {
   ctx.body = { root: path.resolve(root), report };
 });
 
+/** 取本次请求的 trace-id。中间件保证它一定存在 */
+function traceOf(ctx: Koa.Context): string {
+  return (ctx.state.trace as TraceContext).traceId;
+}
+
 /** 三种任务的受理响应格式一致，客户端只认 statusUrl / eventsUrl */
 function accepted(ctx: Koa.Context, record: TaskRecord): void {
   ctx.status = 202;
@@ -344,6 +373,9 @@ function accepted(ctx: Koa.Context, record: TaskRecord): void {
     status: record.status,
     statusUrl: `/tasks/${record.taskId}`,
     eventsUrl: `/tasks/${record.taskId}/events`,
+    // 客户端以服务端回的这个为准：我们可能因为解析不出而另生成了一个，
+    // 排障时要对上的是**服务端日志里那个**
+    traceId: record.traceId,
   };
 }
 

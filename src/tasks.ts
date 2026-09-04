@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 
+import { TIMEOUTS } from "./limits.js";
+import { classify, type TaskFailure } from "./failure.js";
+import { log } from "./log.js";
+import { newTrace } from "./trace.js";
+
 /**
  * 三种模式共用的任务机制。
  *
@@ -65,6 +70,13 @@ export interface TaskRecord<TResult = unknown> {
   taskId: string;
   kind: TaskKind;
   root: string;
+  /**
+   * W3C Trace Context 的 trace-id，沿用客户端送来的那个。
+   *
+   * **它是「用户报障」和「服务端日志」之间唯一的桥。** 用户说「卡住了」，
+   * 报的是这个编号的前 8 位；没有它，那句话在日志里对应不到任何东西。
+   */
+  traceId: string;
   status: TaskStatus;
   startedAt: string;
   finishedAt?: string;
@@ -82,13 +94,24 @@ export interface TaskRecord<TResult = unknown> {
   text?: string;
   subscribers: Set<PassThrough>;
   result?: TResult;
+  /**
+   * 失败的人话描述。保留它是为了**不破坏已有的调用方**，
+   * 内容和 `failure.message` 一致。新代码该读 `failure`
+   */
   error?: string;
+  /**
+   * 结构化的失败信息。
+   *
+   * 比一个字符串多回答两个问题：**是哪一类**（供聚合与排障）、
+   * **重试有没有用**（供界面决定给不给重试入口）。
+   */
+  failure?: TaskFailure;
   /** 谁把它停掉的。只在 status 为 cancelled 时有值 */
   cancelReason?: CancelReason;
   /**
    * 取消这个任务的把手。
    *
-   * **前端关掉 EventSource 不等于任务停了** ——那只是「不看了」，
+   * **前端断开连接不等于任务停了** ——那只是「不看了」，
    * 后台该跑还跑，该烧的 token 一个不少。要真的停下来，
    * signal 必须一路传到 `streamText`。
    */
@@ -115,7 +138,7 @@ const MAX_RETAINED = 20;
 const HEARTBEAT_MS = 15_000;
 
 /**
- * 任务整体超时的兜底值。三种模式各自的值见 `limits.ts`。
+ * 任务整体超时。
  *
  * 这里原来写着「在最外层设一道，比在每个可能卡住的地方各设一道更可靠
  * ——后者总会漏掉刚加的那个」。**那句话只对了一半。**
@@ -127,8 +150,14 @@ const HEARTBEAT_MS = 15_000;
  * 错的部分：不该**只有**这一道。总时长 = 各步骤之和，而步骤数本身是
  * 动态的（`ask` 的轮数由模型决定，1 轮和 8 轮差 8 倍），给一个方差这么大
  * 的分布设固定阈值，必然两头不讨好。真正的超时控制该落在单步上。
+ *
+ * 兜底值**按 `kind` 取**，而不是一个跨模式的常量。原来那个常量是
+ * 五分钟：三条路由都显式传了各自的值，所以线上没问题——但新加一种模式
+ * 只要忘了传，就会静默拿到五分钟，`ask` 那种要十分钟的直接被腰斩。
+ * 这跟工具事件回填那条是同一个道理：**能从已有信息推出来的，就别靠
+ * 人记得传**，漏传的失败是静默的。
  */
-const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+const defaultTimeout = (kind: TaskKind): number => TIMEOUTS.task[kind];
 
 const tasks = new Map<string, TaskRecord>();
 
@@ -139,6 +168,8 @@ export function getTask(taskId: string): TaskRecord | undefined {
 export interface StartTaskInput<TResult> {
   kind: TaskKind;
   root: string;
+  /** 客户端送来的 trace-id；不传就自己生成一个 */
+  traceId?: string;
   /** 附加在任务上的描述信息，例如 ask 的问题、refactor 是否写入 */
   meta?: Record<string, unknown>;
   /** 覆盖默认的整体超时 */
@@ -164,6 +195,7 @@ export function startTask<TResult>(input: StartTaskInput<TResult>): TaskRecord<T
     taskId: randomUUID(),
     kind: input.kind,
     root: input.root,
+    traceId: input.traceId ?? newTrace().traceId,
     status: "running",
     startedAt: new Date().toISOString(),
     currentStep: "start",
@@ -176,11 +208,16 @@ export function startTask<TResult>(input: StartTaskInput<TResult>): TaskRecord<T
   tasks.set(record.taskId, record as TaskRecord);
   evictOld();
 
-  const timer = setTimeout(() => {
-    // 超时和用户取消走同一条路：都是 abort。
-    // 区别只记在 cancelReason 上，不占一个状态位
-    if (record.status === "running") cancel(record as TaskRecord, "timeout");
-  }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  log("task.start", { traceId: record.traceId, taskId: record.taskId, kind: record.kind });
+
+  const timer = setTimeout(
+    () => {
+      // 超时和用户取消走同一条路：都是 abort。
+      // 区别只记在 cancelReason 上，不占一个状态位
+      if (record.status === "running") cancel(record as TaskRecord, "timeout");
+    },
+    input.timeoutMs ?? defaultTimeout(input.kind),
+  );
   // 别让一个等待中的定时器把进程钉住
   timer.unref?.();
 
@@ -192,7 +229,7 @@ export function startTask<TResult>(input: StartTaskInput<TResult>): TaskRecord<T
     record.text = (record.text ?? "") + delta;
     // 文本增量不进 events，所以也没有 id——重连时靠 replace 全量补齐
     const payload = formatEvent("delta", { delta });
-    for (const stream of record.subscribers) stream.write(payload);
+    for (const stream of record.subscribers) push(stream, payload);
   };
 
   void (async () => {
@@ -206,9 +243,11 @@ export function startTask<TResult>(input: StartTaskInput<TResult>): TaskRecord<T
         record.status = "cancelled";
         record.error = undefined;
       } else {
+        const failure = classify(error);
         record.status = "failed";
-        record.error = error instanceof Error ? error.message : String(error);
-        emit({ channel: "step", label: "失败", detail: record.error, phase: "error" });
+        record.failure = failure;
+        record.error = failure.message;
+        emit({ channel: "step", label: "失败", detail: failure.message, phase: "error" });
       }
     } finally {
       // 这行**不影响状态正确性**——即便定时器漏了没清，触发时 `cancel()`
@@ -220,6 +259,17 @@ export function startTask<TResult>(input: StartTaskInput<TResult>): TaskRecord<T
       // 守卫已经兜住了后果，剩下的只有 GC 时机，测不出来也不该假装测得出。
       clearTimeout(timer);
       record.finishedAt = new Date().toISOString();
+      // 收尾这一条是排障时最常看的：一次任务到底怎么结束的、花了多久、
+      // 失败属于哪一类。**它必须带 traceId**，否则用户报的编号对不上任何东西
+      log("task.finish", {
+        traceId: record.traceId,
+        taskId: record.taskId,
+        kind: record.kind,
+        status: record.status,
+        durationMs: Date.parse(record.finishedAt) - Date.parse(record.startedAt),
+        failureCode: record.failure?.code,
+        error: record.error,
+      });
       finish(record as TaskRecord);
     }
   })();
@@ -244,6 +294,7 @@ export function cancelTask(taskId: string, reason: CancelReason = "user"): TaskR
 function cancel(record: TaskRecord, reason: CancelReason): void {
   record.status = "cancelled";
   record.cancelReason = reason;
+  log("task.cancel", { traceId: record.traceId, taskId: record.taskId, reason });
   record.finishedAt = new Date().toISOString();
 
   publish(record, {
@@ -257,6 +308,33 @@ function cancel(record: TaskRecord, reason: CancelReason): void {
   finish(record);
 }
 
+/**
+ * 往一条订阅流里写。
+ *
+ * **订阅者消失是常态，不是故障。** 任务是离线的：用户发起之后可以断网、
+ * 可以关页面，**只有显式 cancel 才该终止它**。所以每个写入点都必须能
+ * 容忍「对面已经没了」，而且是**静默跳过**——一旦往上抛，异常会顺着
+ * `emit()` 冒进任务体，被那层 try/catch 抓成 `status = "failed"`：
+ * **一个客户端的网络问题，会把后台任务判死。**
+ *
+ * 两个条件是实测量过的，它们的分量**不一样**，别当成对称的一对：
+ *
+ * - `writableEnded` —— **承重**。`finish()` 调 `end()` 之后 `close` 要等
+ *   读端消费完才来，`clearInterval` 挂在 `close` 上，所以这段空隙里心跳
+ *   还活着。裸 `write` 在这里撞出过真实崩溃：`ERR_STREAM_WRITE_AFTER_END`
+ *   是未捕获错误，直接崩进程。去掉这半边，变异测试立刻变红。
+ *
+ * - `destroyed` —— **只是省事，不承重**。去掉它测试全绿（27/27）。原因是
+ *   写一条已销毁的流本身不报错：干净的 `destroy()` 是静默的，
+ *   `destroy(err)` 会重新抛那个 error，而那条路已经由 `attachStream` 里的
+ *   `error` 监听兜住了。留着是因为它免费、且表达了意图——但**它不是那道
+ *   防线**，防线在 `attachStream`。
+ */
+function push(stream: PassThrough, payload: string): void {
+  if (stream.writableEnded || stream.destroyed) return;
+  stream.write(payload);
+}
+
 function publish(record: TaskRecord, event: TaskEvent): void {
   // 事件在数组里的下标就是它的 SSE id，不用再维护一个自增计数器
   const id = record.events.length;
@@ -265,15 +343,15 @@ function publish(record: TaskRecord, event: TaskEvent): void {
   if (event.phase !== "end") record.currentStep = event.label;
 
   const payload = formatEvent("progress", event, id);
-  for (const stream of record.subscribers) stream.write(payload);
+  for (const stream of record.subscribers) push(stream, payload);
 }
 
 /** 终态统一走 done 事件并关闭流，否则标准 SSE 客户端会一直挂着 */
 function finish(record: TaskRecord): void {
   const payload = formatEvent("done", summaryOf(record));
   for (const stream of record.subscribers) {
-    stream.write(payload);
-    stream.end();
+    push(stream, payload);
+    if (!stream.destroyed) stream.end();
   }
   record.subscribers.clear();
 }
@@ -291,6 +369,24 @@ export function attachStream(
   heartbeatMs: number = HEARTBEAT_MS,
 ): PassThrough {
   const stream = new PassThrough();
+
+  // **这条监听是整个「离线任务」承诺的兜底。**
+  //
+  // 后台任务是离线的：用户发起之后可以断网、可以关页面，只有显式 cancel
+  // 才该终止它。而这条流是**唯一一处「客户端的问题」能物理接触到服务端**
+  // 的地方——它一旦以未捕获错误的形式冒出去，就不是「这个订阅者掉线」，
+  // 而是**整个进程崩掉、所有人的任务一起陪葬**。
+  //
+  // 缺口是实测确认的，不是假想：Node 流上没有 `error` 监听就是未捕获异常，
+  // 而 Koa 的 respond 是 `body.pipe(res)`（application.js:303）——`pipe()`
+  // **不会**给源流挂 error 监听，`onFinished` 听的也是 response 不是它。
+  // 所以只要有谁 `destroy(err)` 了这条流（socket hang up、代理掐断），
+  // 进程就没了。
+  //
+  // 这里**故意什么都不做**：订阅者的链路出问题不是任务的故障，不该改状态、
+  // 不该记 error、更不该往上抛。清理交给下面的 `close`（error 之后
+  // autoDestroy 一定会走到那儿）。**观察者的失败不能改变被观察者的行为。**
+  stream.on("error", () => {});
 
   // 断线重连时浏览器会自动带上 Last-Event-ID，从那条之后接着发。
   // 不做这件事的话，重连会把前面所有事件再推一遍，前端时间线直接翻倍
@@ -315,8 +411,10 @@ export function attachStream(
 
   record.subscribers.add(stream);
 
-  // 心跳不进 events，也不带 id——它不是进度，只是「这条链路还通」
-  const beat = setInterval(() => stream.write(formatEvent("ping", {})), heartbeatMs);
+  // 心跳不进 events，也不带 id——它不是进度，只是「这条链路还通」。
+  // 走 `push` 是必须的而不是顺手：`end()` 到 `close` 之间那段空隙里
+  // `clearInterval` 还没执行，裸 `write` 在这里撞出过真实崩溃
+  const beat = setInterval(() => push(stream, formatEvent("ping", {})), heartbeatMs);
   beat.unref?.();
 
   stream.on("close", () => {
@@ -343,7 +441,9 @@ export function summaryOf(record: TaskRecord) {
     startedAt: record.startedAt,
     finishedAt: record.finishedAt,
     error: record.error,
+    failure: record.failure,
     cancelReason: record.cancelReason,
+    traceId: record.traceId,
   };
 }
 

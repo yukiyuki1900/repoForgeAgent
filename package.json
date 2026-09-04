@@ -23,7 +23,7 @@
     "eval": "tsx scripts/eval.ts",
     "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\" \"web/src/**/*.{ts,tsx}\" \"web/tests/**/*.tsx\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\" \"web/src/**/*.{ts,tsx}\" \"web/tests/**/*.tsx\"",
-    "test": "node --import tsx --test tests/*.test.ts && pnpm --dir web test"
+    "test": "REPOSURGEON_LOG=off node --import tsx --test tests/*.test.ts && pnpm --dir web test"
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.0.8",

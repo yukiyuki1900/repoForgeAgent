@@ -6,6 +6,7 @@ import { analyzeDeadExports, type DeadExportResult } from "./deadexports.js";
 import { extractGraph } from "./graph.js";
 import type { FileNode, Finding, RelationEdge, SymbolNode } from "./model.js";
 import { scanFiles } from "./scanner.js";
+import { TaskError } from "./failure.js";
 
 /**
  * 暴露给模型的只读工具集。
@@ -39,7 +40,7 @@ export async function buildIndex(root: string): Promise<CodebaseIndex> {
   const { files, contents } = await scanFiles(absolute);
 
   if (files.length === 0) {
-    throw new Error(`在 ${absolute} 下没有找到可分析的源码文件`);
+    throw new TaskError("input", `在 ${absolute} 下没有找到可分析的源码文件`);
   }
 
   const { symbols, edges } = extractGraph(absolute, files, contents);
@@ -113,7 +114,10 @@ export const PREVIEW = {
 };
 
 /** 把任意返回值压成一段可读的预览，超出部分如实报告 */
-export function previewOf(value: unknown, limit = PREVIEW.result): {
+export function previewOf(
+  value: unknown,
+  limit = PREVIEW.result,
+): {
   text: string;
   omitted: number;
 } {
@@ -510,8 +514,7 @@ function observed<T extends Record<string, { execute?: unknown }>>(
 
   for (const [name, definition] of Object.entries(tools)) {
     const original = definition.execute as
-      | ((args: unknown, context: unknown) => Promise<unknown>)
-      | undefined;
+      ((args: unknown, context: unknown) => Promise<unknown>) | undefined;
 
     if (!original) {
       wrapped[name] = definition;

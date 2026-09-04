@@ -1,13 +1,7 @@
 import { useRef, useState } from "react";
 import { ActivityLog, formatElapsed } from "./ActivityLog";
 import { StreamingMarkdown } from "./Markdown";
-import {
-  describeError,
-  runTask,
-  TaskCancelled,
-  TaskDisconnected,
-  type TaskEvent,
-} from "./task";
+import { describeError, runTask, TaskCancelled, TaskDisconnected, type TaskEvent } from "./task";
 import { useTypewriter } from "./typewriter";
 
 /**
@@ -103,8 +97,12 @@ export function AskPanel({ root }: { root: string }) {
       }
 
       if (status.status === "failed") {
-        setNotice(`执行失败：${status.error ?? "未知错误"}`);
-        setRetryable(trimmed);
+        // 编号让用户报得出来，服务端日志里 grep 它就能捞到这一次的全部记录
+        setNotice(`执行失败：${status.error ?? "未知错误"}（编号 ${status.traceId.slice(0, 8)}）`);
+        // **只有服务端说「重试有用」才给按钮。** 路径下没有源码、仓库不干净
+        // 这类失败再点一万次也一样，给按钮是把无能为力包装成了选择。
+        // 老服务端不返回 failure，那时退回原来的行为：一律给
+        if (status.failure?.retriable ?? true) setRetryable(trimmed);
         return;
       }
       setResult(status.result);

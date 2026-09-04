@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { ts, type Project } from "ts-morph";
+import { TaskError } from "./failure.js";
 import { TIMEOUTS } from "./limits.js";
 
 /**
@@ -100,6 +101,23 @@ export function introducedSince(
 // ── git ───────────────────────────────────────────────
 
 function git(root: string, args: string[]): string {
+  try {
+    return runGit(root, args);
+  } catch (error) {
+    // 在**抛出的地方**打标，不留给下游拿正则去猜错误文案——
+    // 那种分类会在某次改提示语时静默失效，而且没有测试会因此变红。
+    // 超时那一类交给 `classify` 认 `ETIMEDOUT`：那是平台给的标准码，
+    // 比我们自己的判断更可信
+    if ((error as { code?: string }).code === "ETIMEDOUT") throw error;
+    throw new TaskError("git", `git ${args[0]} 失败：${messageOf(error)}`, error);
+  }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function runGit(root: string, args: string[]): string {
   return execFileSync("git", ["-C", root, ...args], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,

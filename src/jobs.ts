@@ -8,6 +8,7 @@ import { formatPlan, planTypeOnlyRefactor, type RefactorPlan } from "./refactor.
 import { scanFiles } from "./scanner.js";
 import type { TaskEvent } from "./tasks.js";
 import { buildIndex, PREVIEW, previewOf } from "./tools.js";
+import { TaskError } from "./failure.js";
 
 /**
  * 任务体：三种模式各自「干什么」。
@@ -43,7 +44,7 @@ export async function runRefactorJob(
 ): Promise<RefactorJobResult> {
   emit({ channel: "step", label: "扫描仓库" });
   const { files, contents } = await scanFiles(root);
-  if (files.length === 0) throw new Error(`在 ${root} 下没有找到可分析的源码文件`);
+  if (files.length === 0) throw new TaskError("input", `在 ${root} 下没有找到可分析的源码文件`);
   emit({ channel: "step", label: "扫描仓库", detail: `${files.length} 个文件` });
 
   const { edges } = extractGraph(root, files, contents);

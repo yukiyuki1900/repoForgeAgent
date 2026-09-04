@@ -6,10 +6,12 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runRefactorJob } from "../src/jobs.js";
+import { TIMEOUTS } from "../src/limits.js";
 import {
   attachStream,
   cancelTask,
   formatEvent,
+  getTask,
   startTask,
   type TaskEvent,
 } from "../src/tasks.js";
@@ -314,6 +316,27 @@ describe("任务的取消与超时", () => {
     assert.equal(record.status, "completed");
     assert.equal(record.cancelReason, undefined);
   });
+
+  it("不传 timeoutMs 时，兜底值按 kind 取，不是一个跨模式的常量", (t) => {
+    // 原来的兜底是一个五分钟的常量。三条路由都显式传了各自的值，所以
+    // 线上没暴露——但新加一种模式只要忘了传，就静默拿到五分钟，
+    // ask 那种要十分钟的直接被腰斩。漏传的失败是**不报错**的那种。
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    t.after(() => t.mock.timers.reset());
+
+    const record = startTask({
+      kind: "ask", // 十分钟那一档
+      root: "/tmp",
+      run: () => new Promise(() => {}),
+    });
+
+    t.mock.timers.tick(TIMEOUTS.task.analyze + 1000);
+    assert.equal(record.status, "running", "ask 不该按 analyze 的五分钟被砍掉");
+
+    t.mock.timers.tick(TIMEOUTS.task.ask - TIMEOUTS.task.analyze);
+    assert.equal(record.status, "cancelled", "到了自己那一档还是要兜住");
+    assert.equal(record.cancelReason, "timeout");
+  });
 });
 
 /**
@@ -351,7 +374,7 @@ describe("SSE 事件的可续传", () => {
     assert.match(resumed, /第三步/);
   });
 
-  it("订阅之后会持续发心跳，且心跳不带 id", async () => {
+  it("订阅之后会持续发心跳，且心跳不带 id", async (t) => {
     // 心跳解决的是一个前端**没资格自己判断**的问题：连接看起来开着、
     // 但一个字节都过不来。用「多久没进度」去猜必然误杀慢任务，
     // 而心跳是定频的，收不到就只可能是链路问题。
@@ -363,6 +386,15 @@ describe("SSE 事件的可续传", () => {
     });
 
     const stream = attachStream(record, undefined, 20);
+    // 清理挂在 after 上而不是写在用例末尾：断言一失败就抛，末尾的清理直接
+    // 跳过。**但别指望它能兜住整个文件**——这里还有一堆用例只关心事件内容、
+    // 压根不关流，实测去掉 unref 后退出时仍有 4 个 Timeout 活着。
+    // 让这个文件能正常退出的是 unref，不是清理写得多干净
+    t.after(() => {
+      stream.destroy();
+      cancelTask(record.taskId);
+    });
+
     await new Promise((resolve) => setTimeout(resolve, 90));
     const received = String(stream.read() ?? "");
 
@@ -375,18 +407,16 @@ describe("SSE 事件的可续传", () => {
     );
     // 心跳不进 events 数组，给它编号会污染 Last-Event-ID 续传
     assert.doesNotMatch(received, /id: \d+\nevent: ping/, "心跳不该带 id");
-
-    stream.destroy();
-    cancelTask(record.taskId);
   });
 
-  it("流关掉之后心跳必须停，否则每个断开的连接都留一个定时器", async () => {
+  it("流关掉之后心跳必须停，否则每个断开的连接都留一个定时器", async (t) => {
     const record = startTask({
       kind: "ask",
       root: "/tmp",
       run: () => new Promise(() => {}),
       timeoutMs: 60_000,
     });
+    t.after(() => cancelTask(record.taskId));
 
     const stream = attachStream(record, undefined, 20);
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -404,8 +434,55 @@ describe("SSE 事件的可续传", () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
     assert.equal(writesAfterClose, 0, "流关掉后心跳必须停，否则每个断开的连接都漏一个定时器");
     assert.equal(record.subscribers.size, 0, "订阅者也要清掉");
+  });
 
-    cancelTask(record.taskId);
+  it("任务结束到流关闭之间的空隙里，心跳不能再往流里写", async (t) => {
+    // 这条是实测撞出来的，不是假想的边界：
+    // `finish()` 调 `end()` 只结束**可写端**，`close` 要等读端也消费完才来，
+    // 而 `clearInterval` 挂在 `close` 上。没人读这条流的时候，这段空隙可以
+    // 无限长——心跳每一次触发都是 `ERR_STREAM_WRITE_AFTER_END`，
+    // 而流上没人听 `error` 就是未捕获错误，**直接崩进程**。
+    const record = startTask({
+      kind: "ask",
+      root: "/tmp",
+      run: async () => ({ ok: true }),
+      timeoutMs: 60_000,
+    });
+
+    const stream = attachStream(record, undefined, 20);
+    t.after(() => stream.destroy());
+
+    const errors: string[] = [];
+    stream.on("error", (err: NodeJS.ErrnoException) => errors.push(err.code ?? err.message));
+
+    // 故意不读这条流：读端不消费，`close` 就不会来，空隙一直开着
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    assert.deepEqual(errors, [], "任务已结束的流上不该再有写入");
+  });
+
+  it("心跳定时器不能吊住事件循环", async (t) => {
+    // 心跳是 setInterval，默认会 ref 住事件循环——一条挂着心跳的流足以
+    // 让整个进程无法自然退出（实测：去掉 unref 后进程挂死，只能被强杀）。
+    // 心跳只是给活着的连接保活，它自己没有「让进程继续跑」的资格。
+    const timers = (): number =>
+      process.getActiveResourcesInfo().filter((r) => r === "Timeout").length;
+
+    const record = startTask({
+      kind: "ask",
+      root: "/tmp",
+      run: () => new Promise(() => {}),
+      timeoutMs: 60_000,
+    });
+
+    const before = timers();
+    const stream = attachStream(record, undefined, 20);
+    t.after(() => {
+      stream.destroy();
+      cancelTask(record.taskId);
+    });
+
+    assert.equal(timers(), before, "心跳定时器必须 unref，否则进程退不出去");
   });
 
   it("实时推送的事件也带 id，不只是回放的那份", async () => {
@@ -464,5 +541,201 @@ describe("SSE 事件的可续传", () => {
     const resumed = read(attachStream(record, "999"));
     assert.match(resumed, /"replace":true/);
     assert.match(resumed, /已经写了一半/);
+  });
+});
+
+/**
+ * 后台任务是**离线**的。
+ *
+ * 用户发起之后可以断网、可以关页面、可以换设备，**只有显式 cancel
+ * 才该终止它**。这不是「顺便也支持」，而是这个模块的核心不变量——
+ * 一次 analyze 要跑几十秒到几分钟，要求用户盯着页面才是设计错误。
+ *
+ * 这一组用例存在的理由是：这条不变量之前**只是碰巧成立**。
+ * 没有任何东西守着它，而破坏它只需要在某个写入点上少一道守卫——
+ * 异常会顺着 `emit()` 冒进任务体，被 try/catch 抓成 `failed`，
+ * 于是「一个客户端掉线」变成「后台任务被判死」。
+ */
+describe("离线任务不受客户端影响", () => {
+  const read = (stream: PassThrough): string => String(stream.read() ?? "");
+
+  it("订阅者断开后，任务照常跑完，事件一条不少", async () => {
+    let resume: (() => void) | undefined;
+    const record = startTask({
+      kind: "analyze",
+      root: "/tmp",
+      run: async ({ emit, emitText }) => {
+        emit({ channel: "step", label: "断开之前" });
+        await new Promise<void>((r) => (resume = r));
+        // 这一段是在「已经没有任何订阅者」的情况下跑的
+        emit({ channel: "step", label: "断开之后" });
+        emitText("断开期间生成的回答");
+        return { ok: true };
+      },
+    });
+
+    const stream = attachStream(record, undefined, 20);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // 模拟客户端断开：api.ts 里 ctx.req.on("close") 走的就是这一行
+    stream.destroy();
+
+    // 写这条断言时我先写的是 `size === 0`，结果**当场变红**——
+    // `destroy()` 是同步打标记、异步派发 `close`，而移出 subscribers 挂在
+    // `close` 上。所以这一瞬间流已经死了、却还在集合里。
+    // 这正是 `push()` 那道守卫存在的窗口，不是测试写错了
+    assert.equal(record.subscribers.size, 1, "destroy 之后 close 之前，它还在集合里");
+    assert.equal(stream.destroyed, true);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(record.subscribers.size, 0, "close 到了才真的清掉");
+
+    resume?.();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.equal(record.status, "completed", "客户端断开不该让任务失败或取消");
+    assert.deepEqual(record.result, { ok: true });
+    assert.deepEqual(
+      record.events.map((e) => e.label),
+      ["断开之前", "断开之后"],
+      "没人听的时候事件照样要进 events，否则重新连上就缺一块",
+    );
+    assert.equal(record.text, "断开期间生成的回答");
+  });
+
+  it("链路是「带错误地」断掉的时候，也不能波及任务", async () => {
+    // 上一条用的是干净的 destroy()，那种情况 Node 会静默吞掉后续写入。
+    // 但**真实的断线不是干净的**：socket hang up、代理掐断，Node 是
+    // `destroy(err)` ——之后每一次 write 都会把那个 error 重新抛出来。
+    //
+    // 而我们这条 PassThrough 上**没有人监听 error**：Koa 的 respond 是
+    // `body.pipe(res)`，`pipe()` 不给源流挂 error 监听，`onFinished` 听的
+    // 是 response 不是它。所以未捕获 → 崩进程 → **所有任务陪葬**。
+    // 一个用户的网络抖动，会杀掉其他所有人正在跑的任务。
+    let resume: (() => void) | undefined;
+    const record = startTask({
+      kind: "analyze",
+      root: "/tmp",
+      run: async ({ emit }) => {
+        await new Promise<void>((r) => (resume = r));
+        emit({ channel: "step", label: "断开之后仍然继续" });
+        return { ok: true };
+      },
+    });
+
+    const stream = attachStream(record, undefined, 20);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // 故意不挂 error 监听——就是要复现线上那条没人兜底的路径
+    stream.destroy(new Error("socket hang up"));
+
+    resume?.();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    assert.equal(record.status, "completed", "对面怎么断的，都不该改变任务的命运");
+    assert.ok(record.events.some((e) => e.label === "断开之后仍然继续"));
+  });
+
+  it("断开期间产生的一切，重新连上能完整拿回来", async () => {
+    let resume: (() => void) | undefined;
+    const record = startTask({
+      kind: "ask",
+      root: "/tmp",
+      run: async ({ emit, emitText }) => {
+        emit({ channel: "step", label: "第一步" });
+        await new Promise<void>((r) => (resume = r));
+        emit({ channel: "step", label: "第二步" });
+        emitText("完整的回答");
+        return { ok: true };
+      },
+    });
+
+    const first = attachStream(record, undefined, 20);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    read(first); // 消费掉「第一步」
+    first.destroy();
+
+    resume?.();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // 关了页面重新打开：没有 Last-Event-ID，从头补
+    const reopened = read(attachStream(record));
+    assert.match(reopened, /第一步/);
+    assert.match(reopened, /第二步/, "断开期间的事件必须补得回来");
+    assert.match(reopened, /完整的回答/);
+    assert.match(reopened, /event: done/, "任务已经结束，直接以 done 收尾");
+  });
+
+  it("所有订阅者都走光，任务也不会被取消", async () => {
+    const record = startTask({
+      kind: "analyze",
+      root: "/tmp",
+      run: async ({ emit }) => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        emit({ channel: "step", label: "没人看也要跑完" });
+        return { ok: true };
+      },
+    });
+
+    // 两个标签页，然后全关掉
+    const a = attachStream(record, undefined, 20);
+    const b = attachStream(record, undefined, 20);
+    a.destroy();
+    b.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(record.subscribers.size, 0);
+    assert.equal(record.status, "running", "没人订阅不是取消的理由");
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(record.status, "completed");
+  });
+
+  it("只有显式 cancel 才终止——断开不是意图表达", async () => {
+    const make = (): ReturnType<typeof startTask> =>
+      startTask({
+        kind: "analyze",
+        root: "/tmp",
+        run: ({ signal }) =>
+          new Promise((_, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          }),
+        timeoutMs: 60_000,
+      });
+
+    const disconnected = make();
+    attachStream(disconnected, undefined, 20).destroy();
+
+    const stopped = make();
+    cancelTask(stopped.taskId);
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    assert.equal(disconnected.status, "running", "断开 ≠ 停止");
+    assert.equal(stopped.status, "cancelled");
+    assert.equal(stopped.cancelReason, "user");
+
+    cancelTask(disconnected.taskId);
+  });
+
+  it("running 的任务永远不会被淘汰，哪怕没人在看", async () => {
+    // 关掉页面几分钟后回来，任务记录还得在。淘汰只挑已完成的
+    const alive = startTask({
+      kind: "analyze",
+      root: "/tmp",
+      run: () => new Promise(() => {}),
+      timeoutMs: 60_000,
+    });
+
+    // 冲掉保留上限：制造远超 MAX_RETAINED 的已完成任务
+    for (let i = 0; i < 30; i += 1) {
+      startTask({ kind: "ask", root: "/tmp", run: async () => ({ i }) });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    startTask({ kind: "ask", root: "/tmp", run: async () => ({ last: true }) });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.ok(getTask(alive.taskId), "正在跑的任务不该被淘汰掉");
+    cancelTask(alive.taskId);
   });
 });

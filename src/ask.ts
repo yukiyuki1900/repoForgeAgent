@@ -1,4 +1,6 @@
 import { streamText } from "ai";
+
+import { TaskError } from "./failure.js";
 import type { Model } from "./llm.js";
 import { createTools, type CodebaseIndex, type ToolCall } from "./tools.js";
 import { stepSignal, TIMEOUTS } from "./limits.js";
@@ -96,16 +98,29 @@ export async function askCodebase(options: AskOptions): Promise<AskResult> {
     ].join("\n"),
   });
 
-  // 必须把流消费完，text / steps / usage 才会兑现
-  for await (const part of stream.fullStream) {
-    if (part.type === "text-delta") options.onTextDelta?.(part.textDelta);
-  }
+  // 模型这一段单独包起来，是为了在**抛出的地方**就把失败归成 `model` 类。
+  // 这一类判定为可重试：鉴权过期以外，网关抖动和限流都是瞬时的。
+  // 取消和超时不在这里改写——前者由任务层按 signal 判定，后者
+  // `classify` 会认平台给的 `TimeoutError`，都比我们自己猜准
+  let text: string;
+  let stepList: Awaited<typeof stream.steps>;
+  let usage: Awaited<typeof stream.usage>;
+  try {
+    // 必须把流消费完，text / steps / usage 才会兑现
+    for await (const part of stream.fullStream) {
+      if (part.type === "text-delta") options.onTextDelta?.(part.textDelta);
+    }
 
-  // 流式推送的是过程，最终结果以 SDK 汇总的为准：
-  // 多步调用时中间轮次也可能吐字，累积值未必等于最后那段回答
-  const text = await stream.text;
-  const stepList = await stream.steps;
-  const usage = await stream.usage;
+    // 流式推送的是过程，最终结果以 SDK 汇总的为准：
+    // 多步调用时中间轮次也可能吐字，累积值未必等于最后那段回答
+    text = await stream.text;
+    stepList = await stream.steps;
+    usage = await stream.usage;
+  } catch (error) {
+    if (options.signal?.aborted || (error as { name?: string }).name === "TimeoutError")
+      throw error;
+    throw new TaskError("model", `模型调用失败：${describe(error)}`, error);
+  }
 
   // 撞上限时最后一步通常还在调工具、没来得及给结论。
   // 这种情况必须标出来——一个被截断的回答看起来和完整回答没有区别
@@ -148,4 +163,8 @@ export function formatAskResult(result: AskResult, alreadyStreamed = false): str
   }
 
   return lines.join("\n");
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
