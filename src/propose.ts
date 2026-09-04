@@ -2,6 +2,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { renderProposalFacts, type ProposalFacts } from "./facts.js";
 import type { Model } from "./llm.js";
+import { stepSignal, TIMEOUTS } from "./limits.js";
 
 /**
  * 让模型对「规则主动放弃的那部分」提方案。
@@ -115,7 +116,11 @@ const SYSTEM_PROMPT = [
   "- 不要提修改函数体、跨文件搬运符号、调整目录结构这类方案，它们不在可执行范围内。",
 ].join("\n");
 
-export async function proposeCleanup(model: Model, facts: ProposalFacts): Promise<ProposeResult> {
+export async function proposeCleanup(
+  model: Model,
+  facts: ProposalFacts,
+  signal?: AbortSignal,
+): Promise<ProposeResult> {
   // 没有候选就不要浪费一次调用——模型面对空清单只会编
   if (facts.candidates.length === 0) {
     return { proposals: [], elapsedMs: 0 };
@@ -128,6 +133,7 @@ export async function proposeCleanup(model: Model, facts: ProposalFacts): Promis
     schema: proposalBatchSchema,
     system: SYSTEM_PROMPT,
     prompt: renderProposalFacts(facts),
+    abortSignal: stepSignal(signal, TIMEOUTS.modelCall),
   });
 
   return { proposals: object.proposals, elapsedMs: Date.now() - started };

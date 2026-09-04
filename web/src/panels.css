@@ -1345,3 +1345,45 @@
   color: #a8b4c2;
   font-style: normal;
 }
+
+/* 「还活着」指示器：· ·· ··· 循环。
+   亮起后保持到周期末，形成累加而不是逐个闪烁 */
+.pending-dots {
+  display: inline-flex;
+  gap: 1px;
+  margin-left: 3px;
+  vertical-align: baseline;
+}
+
+.pending-dots span {
+  opacity: 0;
+  color: #8aa4c0;
+  font-weight: 700;
+  animation: pending-dot 1.2s infinite;
+}
+
+.pending-dots span:nth-child(2) {
+  animation-delay: 0.3s;
+}
+
+.pending-dots span:nth-child(3) {
+  animation-delay: 0.6s;
+}
+
+@keyframes pending-dot {
+  0% {
+    opacity: 0;
+  }
+  20%,
+  100% {
+    opacity: 1;
+  }
+}
+
+/* 动效是装饰，不是信息——计时器已经把「跑了多久」说清楚了 */
+@media (prefers-reduced-motion: reduce) {
+  .pending-dots span {
+    opacity: 1;
+    animation: none;
+  }
+}

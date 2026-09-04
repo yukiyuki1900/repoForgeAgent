@@ -1,6 +1,7 @@
 import { streamText } from "ai";
 import type { Model } from "./llm.js";
 import { createTools, type CodebaseIndex, type ToolCall } from "./tools.js";
+import { stepSignal, TIMEOUTS } from "./limits.js";
 
 /**
  * 让模型自己决定查什么。
@@ -84,7 +85,9 @@ export async function askCodebase(options: AskOptions): Promise<AskResult> {
     model,
     tools,
     maxSteps,
-    abortSignal: options.signal,
+    // 任务级取消 + 单轮上限。8 轮各自计时，而不是共用一个总预算——
+    // 一轮卡住不该把后面还没开始的几轮一起判死
+    abortSignal: stepSignal(options.signal, TIMEOUTS.modelCall),
     system: SYSTEM_PROMPT,
     prompt: [
       `仓库概览：${index.files.length} 个文件、${index.symbols.length} 个符号、${index.edges.length} 条关系边、${index.cycles.length} 处循环依赖。`,

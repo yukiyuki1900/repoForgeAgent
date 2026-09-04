@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { ts, type Project } from "ts-morph";
+import { TIMEOUTS } from "./limits.js";
 
 /**
  * 改造的验证骨架。
@@ -103,6 +104,14 @@ function git(root: string, args: string[]): string {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
+    // 没有这一行的话，`.git/index.lock` 被别的进程占着时这里会无限等——
+    // 而且是**同步**子进程，卡住会把整个 Node 线程钉死，连心跳都发不出去。
+    //
+    // 变异测试里删掉它是 0/48，那是**真实的**结果而不是断言漏了：
+    // 要触发需要构造精确的锁竞争，而 `git status` 遇到 lock 通常直接报错、
+    // 不是等待。测不出来也不该假装测得出——但这一行不能省，
+    // 它防的是整个进程被一条 git 命令拖死。
+    timeout: TIMEOUTS.git,
   });
 }
 

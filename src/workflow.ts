@@ -74,7 +74,10 @@ const State = Annotation.Root({
 export type WorkflowState = typeof State.State;
 
 type QueryPlanner = (query: string) => QueryPlan | Promise<QueryPlan>;
-type Narrator = (context: NarrationContext) => Promise<Narration | undefined>;
+type Narrator = (
+  context: NarrationContext,
+  signal?: AbortSignal,
+) => Promise<Narration | undefined>;
 type Planner = (
   input: Parameters<typeof planExecution>[0],
 ) => ExecutionPlan | Promise<ExecutionPlan>;
@@ -100,13 +103,20 @@ export type ProgressListener = (event: ProgressEvent) => void;
 interface NodeContext {
   runId?: string;
   onProgress?: ProgressListener;
+  /**
+   * 任务级取消信号。
+   *
+   * LangGraph 自己也能在**节点边界**中止，但那救不了正在进行的模型调用——
+   * `narrate` 那 18 秒照样会跑完。所以 signal 必须一路递到发请求的地方。
+   */
+  signal?: AbortSignal;
 }
 
 /** 未配置模型时返回 undefined，流水线降级为纯确定性分析 */
-const defaultNarrator: Narrator = async (context) => {
+const defaultNarrator: Narrator = async (context, signal) => {
   const model = resolveModel();
   if (!model) return undefined;
-  return narrateWithModel(model, context);
+  return narrateWithModel(model, context, signal);
 };
 
 /**
@@ -233,6 +243,7 @@ export interface GraphOptions {
   /** 默认是规则决策；留出注入点，方便换成模型或做实验对照 */
   planner?: Planner;
   onProgress?: ProgressListener;
+  signal?: AbortSignal;
 }
 
 export function createAnalysisGraph(options: GraphOptions = {}) {
@@ -242,8 +253,9 @@ export function createAnalysisGraph(options: GraphOptions = {}) {
     narrator = defaultNarrator,
     planner = planExecution,
     onProgress,
+    signal,
   } = options;
-  const context: NodeContext = { runId, onProgress };
+  const context: NodeContext = { runId, onProgress, signal };
 
   const graph = new StateGraph(State)
     .addNode(
@@ -338,7 +350,7 @@ export function createAnalysisGraph(options: GraphOptions = {}) {
     )
     .addNode("plan", node("plan", planHandler(planner), context))
     .addNode("retrieveContext", node("retrieveContext", retrievalHandler(queryPlanner), context))
-    .addNode("narrate", node("narrate", narrateHandler(narrator), context))
+    .addNode("narrate", node("narrate", narrateHandler(narrator, signal), context))
     .addNode("render", node("render", renderHandler, context))
 
     .addEdge(START, "loadRepository")
@@ -432,7 +444,7 @@ function retrievalHandler(queryPlanner: QueryPlanner): NodeHandler {
   };
 }
 
-function narrateHandler(narrator: Narrator): NodeHandler {
+function narrateHandler(narrator: Narrator, signal?: AbortSignal): NodeHandler {
   return async (state) => {
     const context = buildNarrationContext({
       stack: state.stack!,
@@ -452,7 +464,7 @@ function narrateHandler(narrator: Narrator): NodeHandler {
 
     let narration: Narration | undefined;
     try {
-      narration = await narrator(context);
+      narration = await narrator(context, signal);
       if (!narration) {
         console.log("[narrate] 未配置模型，跳过架构叙述，仅输出确定性分析结果");
       }
@@ -493,6 +505,7 @@ export interface RunOptions {
   full?: boolean;
   runId?: string;
   onProgress?: ProgressListener;
+  signal?: AbortSignal;
 }
 
 /**
@@ -508,11 +521,14 @@ export async function runAnalysis(root: string, options: RunOptions = {}): Promi
   const graph = createAnalysisGraph({
     runId,
     onProgress: options.onProgress,
+    signal: options.signal,
   });
 
   const result = await graph.invoke(
     { root, query: options.query, full: options.full, currentStep: "start" },
-    { configurable: { thread_id: runId } },
+    // 两处都要传：这里管的是节点**边界**上的中止，
+    // context 里那份管的是节点**内部**正在飞的那个请求
+    { configurable: { thread_id: runId }, signal: options.signal },
   );
 
   await saveCheckpoint(root, runId, summarize(result));

@@ -1,7 +1,13 @@
 import { useRef, useState } from "react";
 import { ActivityLog, formatElapsed } from "./ActivityLog";
 import { StreamingMarkdown } from "./Markdown";
-import { describeError, runTask, TaskCancelled, type TaskEvent } from "./task";
+import {
+  describeError,
+  runTask,
+  TaskCancelled,
+  TaskDisconnected,
+  type TaskEvent,
+} from "./task";
 import { useTypewriter } from "./typewriter";
 
 /**
@@ -106,7 +112,9 @@ export function AskPanel({ root }: { root: string }) {
       // 用户自己点的停止不是故障，不该弹红字
       if (error instanceof TaskCancelled) return;
       setNotice(describeError(error));
-      setRetryable(trimmed);
+      // 连接断了不给重试入口：任务在服务端还活着，再点一次只会起第二个，
+      // 两个一起跑。真失败和看不见了，该给的选项不一样
+      if (!(error instanceof TaskDisconnected)) setRetryable(trimmed);
     } finally {
       setFinishedAt(Date.now());
       setBusy(false);

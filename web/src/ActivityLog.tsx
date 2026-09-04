@@ -142,6 +142,26 @@ export function ActivityRow({ event }: { event: TaskEvent }) {
   );
 }
 
+/**
+ * 「还活着」的指示器：· ·· ··· 循环。
+ *
+ * 刻意**不写成「正在思考」这类文案**——那是在断言原因，而原因不确定：
+ * 可能模型在想，可能工具在跑，也可能字已经在网络上了。文案一旦说错，
+ * 比不说更糟。一个不承载任何语义的指示器，反而是唯一永远不会说谎的。
+ *
+ * 也不设「等待超过 N 秒才显示」的阈值。短等待时闪一下不是缺点——
+ * **界面装作没在等，那是隐瞒，不是优雅。**
+ */
+function PendingDots() {
+  return (
+    <span className="pending-dots" aria-hidden="true">
+      <span>·</span>
+      <span>·</span>
+      <span>·</span>
+    </span>
+  );
+}
+
 export function ActivityLog({ events, running, startedAt, finishedAt, label }: Props) {
   const [open, setOpen] = useState(false);
   const elapsed = useElapsed(startedAt, finishedAt);
@@ -167,7 +187,10 @@ export function ActivityLog({ events, running, startedAt, finishedAt, label }: P
         <span className="activity-time">
           {running ? "已处理" : label ? `${label} 用时` : "用时"} {formatElapsed(elapsed, !running)}
         </span>
-        <span className="activity-summary">{headline}</span>
+        <span className="activity-summary">
+          {headline}
+          {running && <PendingDots />}
+        </span>
         <span className={`activity-caret ${open ? "open" : ""}`}>⌄</span>
       </button>
 

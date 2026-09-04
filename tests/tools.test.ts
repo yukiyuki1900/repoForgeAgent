@@ -373,6 +373,41 @@ function splitForStream(text: string): string[] {
 }
 
 describe("循环层", () => {
+  it("每轮模型调用都套上单轮上限，而不是直接用任务级 signal", async () => {
+    // 直接把任务级 signal 传下去，等于单轮没有上限：
+    // 一轮卡住就一直卡到任务总时长，后面几轮根本没机会开始
+    const controller = new AbortController();
+    let seen: AbortSignal | undefined;
+
+    const model = new MockLanguageModelV1({
+      doStream: async (options) => {
+        seen = options.abortSignal;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-delta" as const, textDelta: "好的" },
+              {
+                type: "finish" as const,
+                finishReason: "stop" as const,
+                usage: { promptTokens: 1, completionTokens: 1 },
+              },
+            ],
+            initialDelayInMs: 0,
+            chunkDelayInMs: 0,
+          }),
+          rawCall: { rawPrompt: null, rawSettings: {} },
+        };
+      },
+    });
+
+    await askCodebase({ model, index, question: "随便问", signal: controller.signal });
+
+    assert.ok(seen, "模型调用必须带 signal");
+    assert.notEqual(seen, controller.signal, "必须是合成信号：任务级取消 + 单轮超时");
+    assert.equal(seen?.aborted, false);
+  });
+
+
   it("查一次工具就能回答时，只走两轮", async () => {
     const model = scriptedModel([
       { tool: { name: "listCycles", args: {} } },

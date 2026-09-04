@@ -111,6 +111,28 @@ describe("ActivityLog", () => {
     assert.match(output, /检测循环依赖/);
   });
 
+  it("运行中一直显示「还活着」的指示器，不设显示阈值", () => {
+    // 不设「等待超过 N 秒才显示」的阈值：短等待时闪一下不是缺点，
+    // **界面装作没在等，那是隐瞒**
+    const output = html(<ActivityLog events={[tool("searchFiles")]} running startedAt={Date.now()} />);
+    assert.match(output, /pending-dots/);
+  });
+
+  it("结束后指示器必须消失", () => {
+    const output = html(
+      <ActivityLog events={[tool("searchFiles")]} running={false} startedAt={0} finishedAt={3000} />,
+    );
+    assert.equal(output.includes("pending-dots"), false);
+  });
+
+  it("指示器不写任何文案", () => {
+    // 「正在思考」是在断言原因，而原因不确定——模型可能早返回了、
+    // 字正在网络上。文案一旦说错比不说更糟
+    const output = html(<ActivityLog events={[]} running startedAt={Date.now()} />);
+    assert.equal(output.includes("思考"), false);
+    assert.equal(output.includes("查询中"), false);
+  });
+
   it("完全没有事件时也不炸", () => {
     const output = html(<ActivityLog events={[]} running={false} startedAt={0} finishedAt={10} />);
     assert.match(output, /无活动/);

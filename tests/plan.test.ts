@@ -59,6 +59,64 @@ afterEach(() => {
   current = undefined;
 });
 
+/**
+ * 取消信号必须递到发请求的地方。
+ *
+ * LangGraph 自己能在**节点边界**中止，但那救不了正在进行的模型调用——
+ * 这条链路以前是断的：用户点停止，界面停了、状态写成 cancelled 了，
+ * 而 narrate 那 18 秒照样跑完，token 照烧。
+ */
+describe("取消信号", () => {
+  it("narrator 拿得到 signal，而不只是图在节点边界停", async () => {
+    const root = sandboxFrom("09-src-layout");
+    const controller = new AbortController();
+    let received: AbortSignal | undefined;
+    let calls = 0;
+
+    const graph = createAnalysisGraph({
+      planner: (input) => planExecution({ ...input, hasModel: true }),
+      narrator: async (_context, signal) => {
+        calls += 1;
+        received = signal;
+        return { summary: "stub", layering: [], risks: [] };
+      },
+      signal: controller.signal,
+    });
+
+    await graph.invoke(
+      { root, currentStep: "start" },
+      { configurable: { thread_id: "signal-1" }, signal: controller.signal },
+    );
+
+    assert.equal(calls, 1, "narrate 应该跑到");
+    assert.ok(received, "signal 没传到发请求的那一层，「停止」在 analyze 下就是半残的");
+    assert.equal(received?.aborted, false);
+  });
+
+  it("外部一取消，narrator 手上那个 signal 立刻是中止态", async () => {
+    const root = sandboxFrom("09-src-layout");
+    const controller = new AbortController();
+    let seen: AbortSignal | undefined;
+
+    const graph = createAnalysisGraph({
+      planner: (input) => planExecution({ ...input, hasModel: true }),
+      narrator: async (_context, signal) => {
+        seen = signal;
+        // 模型调用正在飞的那一刻，用户点了停止
+        controller.abort();
+        return { summary: "stub", layering: [], risks: [] };
+      },
+      signal: controller.signal,
+    });
+
+    await graph
+      .invoke({ root, currentStep: "start" }, { configurable: { thread_id: "signal-2" } })
+      .catch(() => undefined);
+
+    assert.equal(seen?.aborted, true, "取消必须能穿透到正在进行的那次调用");
+  });
+});
+
 describe("planExecution", () => {
   it("没有问题时按全量审计排布", () => {
     const plan = planExecution({ hasModel: true });

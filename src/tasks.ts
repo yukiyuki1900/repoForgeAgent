@@ -99,11 +99,34 @@ export interface TaskRecord<TResult = unknown> {
 const MAX_RETAINED = 20;
 
 /**
- * 任务整体超时。
+ * 心跳间隔。
  *
- * 放在任务层而不是 LLM 调用层：一次 ask 里除了模型调用还有建索引、
- * 工具执行，卡在任何一段都该被兜住。**在最外层设一道，比在每个可能
- * 卡住的地方各设一道更可靠**——后者总会漏掉刚加的那个。
+ * 它解决的是一个**前端无法自己判断**的问题：SSE 连接看起来是开着的，
+ * 但一个字节都过不来（TCP 半开、中间网关静默丢弃）。这种情况下服务端
+ * 往坏掉的 socket 里写是不报错的，浏览器也不会触发 error 事件重连。
+ *
+ * 早期版本让前端用「多久没收到进度」来猜，那是**用错了指标**：
+ * 进度的间隔取决于任务快慢，一个合法的慢节点（`narrate` 单节点 18 秒）
+ * 完全可能长时间没有事件。心跳是恒定频率的，收不到就只可能是链路问题。
+ *
+ * 发成具名事件而不是 SSE 注释行（`: ping`），因为注释行浏览器会吞掉，
+ * **JS 侧感知不到**——那样只能保活代理，帮不了前端判断。
+ */
+const HEARTBEAT_MS = 15_000;
+
+/**
+ * 任务整体超时的兜底值。三种模式各自的值见 `limits.ts`。
+ *
+ * 这里原来写着「在最外层设一道，比在每个可能卡住的地方各设一道更可靠
+ * ——后者总会漏掉刚加的那个」。**那句话只对了一半。**
+ *
+ * 对的部分：最外层这道确实不能省，因为大部分步骤**根本打不断**——
+ * ts-morph 建图、类型检查、Tarjan 全是同步 CPU 密集，一旦开始，
+ * 任何 signal 都停不了它。这道网是它们唯一的防线。
+ *
+ * 错的部分：不该**只有**这一道。总时长 = 各步骤之和，而步骤数本身是
+ * 动态的（`ask` 的轮数由模型决定，1 轮和 8 轮差 8 倍），给一个方差这么大
+ * 的分布设固定阈值，必然两头不讨好。真正的超时控制该落在单步上。
  */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -261,7 +284,12 @@ function finish(record: TaskRecord): void {
  * 先回放已发生的事件再订阅后续；任务如果已经结束，同样以 done 收尾并关流。
  * 两条路径的协议完全一致，客户端不需要区分「接得早」还是「接得晚」。
  */
-export function attachStream(record: TaskRecord, lastEventId?: string): PassThrough {
+export function attachStream(
+  record: TaskRecord,
+  lastEventId?: string,
+  /** 心跳间隔，仅供测试注入——真等 15 秒的用例没人会跑 */
+  heartbeatMs: number = HEARTBEAT_MS,
+): PassThrough {
   const stream = new PassThrough();
 
   // 断线重连时浏览器会自动带上 Last-Event-ID，从那条之后接着发。
@@ -286,7 +314,15 @@ export function attachStream(record: TaskRecord, lastEventId?: string): PassThro
   }
 
   record.subscribers.add(stream);
-  stream.on("close", () => record.subscribers.delete(stream));
+
+  // 心跳不进 events，也不带 id——它不是进度，只是「这条链路还通」
+  const beat = setInterval(() => stream.write(formatEvent("ping", {})), heartbeatMs);
+  beat.unref?.();
+
+  stream.on("close", () => {
+    clearInterval(beat);
+    record.subscribers.delete(stream);
+  });
   return stream;
 }
 

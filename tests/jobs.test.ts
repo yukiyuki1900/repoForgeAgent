@@ -6,7 +6,13 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runRefactorJob } from "../src/jobs.js";
-import { attachStream, cancelTask, startTask, type TaskEvent } from "../src/tasks.js";
+import {
+  attachStream,
+  cancelTask,
+  formatEvent,
+  startTask,
+  type TaskEvent,
+} from "../src/tasks.js";
 
 /**
  * 前后端契约。
@@ -343,6 +349,63 @@ describe("SSE 事件的可续传", () => {
     assert.doesNotMatch(resumed, /第一步/);
     assert.match(resumed, /第二步/);
     assert.match(resumed, /第三步/);
+  });
+
+  it("订阅之后会持续发心跳，且心跳不带 id", async () => {
+    // 心跳解决的是一个前端**没资格自己判断**的问题：连接看起来开着、
+    // 但一个字节都过不来。用「多久没进度」去猜必然误杀慢任务，
+    // 而心跳是定频的，收不到就只可能是链路问题。
+    const record = startTask({
+      kind: "ask",
+      root: "/tmp",
+      run: () => new Promise(() => {}), // 永不结束，好让心跳有机会发出来
+      timeoutMs: 60_000,
+    });
+
+    const stream = attachStream(record, undefined, 20);
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    const received = String(stream.read() ?? "");
+
+    // 具名事件而不是 SSE 注释行（`: ping`）——注释行浏览器会吞掉，
+    // JS 侧感知不到，那样只能保活代理，帮不了前端判断
+    assert.match(received, /event: ping\n/, "心跳必须是具名事件");
+    assert.ok(
+      received.split("event: ping").length - 1 >= 2,
+      "心跳要持续发，只发一次等于没有",
+    );
+    // 心跳不进 events 数组，给它编号会污染 Last-Event-ID 续传
+    assert.doesNotMatch(received, /id: \d+\nevent: ping/, "心跳不该带 id");
+
+    stream.destroy();
+    cancelTask(record.taskId);
+  });
+
+  it("流关掉之后心跳必须停，否则每个断开的连接都留一个定时器", async () => {
+    const record = startTask({
+      kind: "ask",
+      root: "/tmp",
+      run: () => new Promise(() => {}),
+      timeoutMs: 60_000,
+    });
+
+    const stream = attachStream(record, undefined, 20);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    stream.destroy();
+
+    // 直接数「关掉之后还写了几次」。
+    // 第一版这里断言的是 subscribers 被清空——那是 delete 干的，
+    // 跟 clearInterval 毫无关系，变异测试里删掉 clearInterval 照样全绿
+    let writesAfterClose = 0;
+    stream.write = () => {
+      writesAfterClose += 1;
+      return true;
+    };
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(writesAfterClose, 0, "流关掉后心跳必须停，否则每个断开的连接都漏一个定时器");
+    assert.equal(record.subscribers.size, 0, "订阅者也要清掉");
+
+    cancelTask(record.taskId);
   });
 
   it("实时推送的事件也带 id，不只是回放的那份", async () => {

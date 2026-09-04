@@ -9,6 +9,7 @@ import type {
   StackResult,
   SymbolNode,
 } from "./model.js";
+import { stepSignal, TIMEOUTS } from "./limits.js";
 
 /**
  * 架构叙述节点的上下文构建与模型调用。
@@ -234,12 +235,17 @@ const SYSTEM_PROMPT = [
 export async function narrateWithModel(
   model: Model,
   context: NarrationContext,
+  signal?: AbortSignal,
 ): Promise<Narration> {
   const { object } = await generateObject({
     model,
     schema: narrationSchema,
     system: SYSTEM_PROMPT,
     prompt: `以下是仓库分析结果的结构化摘要：\n\n${JSON.stringify(context, null, 2)}`,
+    // 这是整条流水线里唯一的 LLM 节点，也是最慢的一步（实测 18 秒）。
+    // 之前它拿不到任何 signal——用户点了停止，界面停了、状态写成 cancelled 了，
+    // 但这次调用会跑完，token 照烧
+    abortSignal: stepSignal(signal, TIMEOUTS.modelCall),
   });
   return object;
 }

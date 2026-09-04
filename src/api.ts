@@ -21,6 +21,7 @@ import {
   type TaskRecord,
 } from "./tasks.js";
 import { runAnalysis } from "./workflow.js";
+import { TIMEOUTS } from "./limits.js";
 
 // 必须在读取任何配置之前加载
 loadEnv();
@@ -65,11 +66,15 @@ router.post("/analysis", (ctx) => {
   const record = startTask({
     kind: "analyze",
     root,
-    run: async ({ emit }) => {
+    timeoutMs: TIMEOUTS.task.analyze,
+    run: async ({ emit, signal }) => {
       const state = await runAnalysis(root, {
         query: body.query,
         full: body.full,
         runId: randomUUID(),
+        // 之前这里没传 signal，于是「停止」在 analyze 下是半残的：
+        // 界面停了、状态写成 cancelled 了，但 narrate 那 18 秒照样跑完
+        signal,
         onProgress: (event) =>
           emit({
             channel: "node",
@@ -109,6 +114,7 @@ router.post("/refactor", (ctx) => {
     kind: "refactor",
     root,
     meta: { apply: shouldApply },
+    timeoutMs: TIMEOUTS.task.refactor,
     run: ({ emit }) => runRefactorJob(root, shouldApply, emit),
   });
 
@@ -142,6 +148,7 @@ router.post("/ask", (ctx) => {
     kind: "ask",
     root,
     meta: { question },
+    timeoutMs: TIMEOUTS.task.ask,
     run: ({ emit, emitText, signal }) =>
       runAskJob(root, question, model, emit, Number(body.maxSteps) || undefined, emitText, signal),
   });
