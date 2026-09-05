@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import fg from "fast-glob";
-import type { FileNode, Language } from "../core/model.js";
+import type { FileNode, Language } from "../core/analysis.js";
 
 const EXTENSIONS: Record<string, Language> = {
   ".ts": "ts",

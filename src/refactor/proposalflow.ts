@@ -1,6 +1,6 @@
 import { collectProposalFacts, type ProposalFacts } from "../analyze/facts.js";
-import type { Model } from "../agent/llm.js";
-import type { FileNode } from "../core/model.js";
+import type { LanguageModel } from "../agent/llm.js";
+import type { FileNode } from "../core/analysis.js";
 import { proposeCleanup, type Proposal } from "./propose.js";
 import { validateProposals, type ValidationResult } from "./validate.js";
 
@@ -33,7 +33,7 @@ export async function proposeAndValidate(input: {
   root: string;
   files: FileNode[];
   contents: Map<string, string>;
-  model: Model;
+  model: LanguageModel;
   onStep?: (message: string) => void;
 }): Promise<ProposalFlow> {
   const { root, files, contents, model } = input;

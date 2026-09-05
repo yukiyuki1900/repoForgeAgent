@@ -1,3 +1,19 @@
+/**
+ * 一次仓库分析的全部词汇：图、发现、结果。
+ *
+ * 这个文件原名 `model.ts`——在一个**既做代码分析、又调大模型**的项目里，
+ * `model` 是全仓最有歧义的一个词：这里的 model 指代码模型（文件、符号、
+ * 关系），而 `agent/llm.ts` 里的 model 指大模型。`agent/ask.ts` 里两种
+ * import 会挨在一起出现，读的人得先分辨这是哪个 model 才能往下读。
+ *
+ * 现在两边都取了不会撞的名字：
+ * - `core/analysis.ts` —— 分析结果的**形状**（名词）
+ * - `agent/llm.ts` 的 `LanguageModel` —— 沿用 ai-sdk 自己的叫法
+ *
+ * 和 `analyze/` 层的关系：这里是名词，那里是动词。形状放在 core，
+ * 是因为 `report` / `refactor` / `task` 都要认这套结构，
+ * 但它们不应该为此依赖分析逻辑。
+ */
 import type { ExecutionPlan } from "./plan.js";
 
 export type Language = "ts" | "tsx" | "js" | "jsx" | "vue";

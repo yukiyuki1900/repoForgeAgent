@@ -1,7 +1,7 @@
 import { streamText } from "ai";
 
 import { TaskError } from "../core/failure.js";
-import type { Model } from "./llm.js";
+import type { LanguageModel } from "./llm.js";
 import { createTools, type CodebaseIndex, type ToolCall } from "./tools.js";
 import { stepSignal, TIMEOUTS } from "../core/limits.js";
 
@@ -52,7 +52,7 @@ export interface AskResult {
 }
 
 export interface AskOptions {
-  model: Model;
+  model: LanguageModel;
   index: CodebaseIndex;
   question: string;
   /** 轮次上限，撞到即停并如实标注 */

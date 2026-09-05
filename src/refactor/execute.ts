@@ -7,7 +7,7 @@ import {
   locateExportedStatement,
 } from "../analyze/deadexports.js";
 import { openSemanticProject } from "../scan/graph.js";
-import type { FileNode } from "../core/model.js";
+import type { FileNode } from "../core/analysis.js";
 import { remove, unexport } from "./prune.js";
 import type { Proposal } from "./propose.js";
 import { scanFiles } from "../scan/scanner.js";

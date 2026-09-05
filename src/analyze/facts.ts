@@ -7,7 +7,7 @@ import {
 } from "./deadexports.js";
 import { openSemanticProject, type SemanticProject } from "../scan/graph.js";
 import { extractGraph } from "../scan/graph.js";
-import type { FileNode } from "../core/model.js";
+import type { FileNode } from "../core/analysis.js";
 
 /**
  * 给模型的事实包。

@@ -12,7 +12,7 @@ import {
   type SourceFile,
 } from "ts-morph";
 import { loadBuildConfigAliases, matchAlias, type AliasEntry } from "./alias.js";
-import type { FileNode, RelationEdge, RelationKind, SymbolNode } from "../core/model.js";
+import type { FileNode, RelationEdge, RelationKind, SymbolNode } from "../core/analysis.js";
 
 /**
  * 基于 TypeScript AST 提取符号与关系边。

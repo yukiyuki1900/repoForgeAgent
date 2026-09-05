@@ -8,7 +8,7 @@ import {
   type SourceFile,
 } from "ts-morph";
 import { openSemanticProject, type SemanticProject } from "../scan/graph.js";
-import type { FileNode, Finding } from "../core/model.js";
+import type { FileNode, Finding } from "../core/analysis.js";
 
 /**
  * 未使用的导出检测。

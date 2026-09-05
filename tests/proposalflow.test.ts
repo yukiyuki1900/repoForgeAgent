@@ -3,7 +3,7 @@ import path from "node:path";
 import { before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { MockLanguageModelV1 } from "ai/test";
-import type { FileNode } from "../src/core/model.js";
+import type { FileNode } from "../src/core/analysis.js";
 import { formatProposalFlow, proposeAndValidate } from "../src/refactor/proposalflow.js";
 import { scanFiles } from "../src/scan/scanner.js";
 

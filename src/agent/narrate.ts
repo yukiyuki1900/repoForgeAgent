@@ -8,8 +8,11 @@ import type {
   RelationEdge,
   StackResult,
   SymbolNode,
-} from "../core/model.js";
+} from "../core/analysis.js";
 import { stepSignal, TIMEOUTS } from "../core/limits.js";
+// 这里原本自己复制了一份 `type Model = Parameters<typeof generateObject>[0]["model"]`。
+// 同一个类型有两处定义，升级 ai-sdk 时只改一处就会静默地对不上
+import type { LanguageModel } from "./llm.js";
 
 /**
  * 架构叙述节点的上下文构建与模型调用。
@@ -220,8 +223,6 @@ export const narrationSchema = z.object({
     .describe("按处理优先级排序的技术债清单"),
 });
 
-type Model = Parameters<typeof generateObject>[0]["model"];
-
 const SYSTEM_PROMPT = [
   "你是一名资深前端架构师，正在解读一份自动生成的代码仓库分析结果。",
   "",
@@ -233,7 +234,7 @@ const SYSTEM_PROMPT = [
 ].join("\n");
 
 export async function narrateWithModel(
-  model: Model,
+  model: LanguageModel,
   context: NarrationContext,
   signal?: AbortSignal,
 ): Promise<Narration> {

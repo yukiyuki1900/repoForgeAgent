@@ -15,7 +15,7 @@ import type {
   RelationEdge,
   StackResult,
   SymbolNode,
-} from "./core/model.js";
+} from "./core/analysis.js";
 import {
   buildNarrationContext,
   estimateContextTokens,

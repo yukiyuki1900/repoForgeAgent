@@ -7,7 +7,7 @@ import {
   type ParsedFile,
   type SemanticProject,
 } from "../scan/graph.js";
-import type { FileNode, Finding, RelationEdge } from "../core/model.js";
+import type { FileNode, Finding, RelationEdge } from "../core/analysis.js";
 
 /**
  * 用 `import type` 打破循环依赖。

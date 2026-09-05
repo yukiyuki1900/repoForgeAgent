@@ -5,7 +5,7 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { collectProposalFacts, type ProposalFacts } from "../src/analyze/facts.js";
-import type { FileNode } from "../src/core/model.js";
+import type { FileNode } from "../src/core/analysis.js";
 import type { Proposal } from "../src/refactor/propose.js";
 import { scanFiles } from "../src/scan/scanner.js";
 import { validateProposals } from "../src/refactor/validate.js";

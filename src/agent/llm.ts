@@ -3,7 +3,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import type { QueryPlan } from "../analyze/retrieval.js";
 
-export type Model = Parameters<typeof generateObject>[0]["model"];
+export type LanguageModel = Parameters<typeof generateObject>[0]["model"];
 
 const DEFAULT_MODEL = "gpt-4o-mini";
 
@@ -18,7 +18,7 @@ const DEFAULT_MODEL = "gpt-4o-mini";
  * - OPENAI_BASE_URL    可选，用于对接 OpenAI 兼容网关（如 DeepSeek）
  * - REPOSURGEON_MODEL  可选，默认 gpt-4o-mini
  */
-export function resolveModel(): Model | undefined {
+export function resolveModel(): LanguageModel | undefined {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return undefined;
 
@@ -41,7 +41,7 @@ const PROMPT_PREFIX = "把下面的代码检索问题转换为结构化查询计
  * 注意：默认工作流当前使用的是 retrieval.ts 的规则实现 parseQueryPlan，
  * 该函数需要显式传入 model 才会被调用。
  */
-export async function parseQueryWithModel(model: Model, query: string): Promise<QueryPlan> {
+export async function parseQueryWithModel(model: LanguageModel, query: string): Promise<QueryPlan> {
   const { object } = await generateObject({
     model,
     schema: queryPlanSchema,

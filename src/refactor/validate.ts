@@ -6,7 +6,7 @@ import {
 } from "../analyze/deadexports.js";
 import { isWholeFileDead, type ProposalCandidate, type ProposalFacts } from "../analyze/facts.js";
 import { openSemanticProject, type SemanticProject } from "../scan/graph.js";
-import type { FileNode } from "../core/model.js";
+import type { FileNode } from "../core/analysis.js";
 import type { Proposal } from "./propose.js";
 
 /**

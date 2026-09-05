@@ -3,7 +3,7 @@ import { analyzeCycles } from "../analyze/analyzers.js";
 import { applyTypeOnlyRefactor } from "../refactor/apply.js";
 import { askCodebase, type AskResult } from "../agent/ask.js";
 import { extractGraph } from "../scan/graph.js";
-import type { Model } from "../agent/llm.js";
+import type { LanguageModel } from "../agent/llm.js";
 import { formatPlan, planTypeOnlyRefactor, type RefactorPlan } from "../refactor/refactor.js";
 import { scanFiles } from "../scan/scanner.js";
 import type { TaskEvent } from "./tasks.js";
@@ -94,7 +94,7 @@ export async function runRefactorJob(
 export async function runAskJob(
   root: string,
   question: string,
-  model: Model,
+  model: LanguageModel,
   emit: Emit,
   maxSteps?: number,
   onTextDelta?: (delta: string) => void,

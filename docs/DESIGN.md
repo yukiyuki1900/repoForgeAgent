@@ -348,10 +348,10 @@ server.registerTool(name, {
 
 `src/` 原来是 36 个文件平铺在一级目录里。一个专门用来「发现别人仓库结构问题」的工具，自己的源码没有可见结构，这本身就说不过去。
 
-**分组不是凭手感，是照着依赖图来的。** 先把 `from "./x.js"` 全部抽出来数了一遍：三个入口（`cli` / `api` / `mcp`）、`model.ts` 被依赖 19 次是类型底座、`graph.ts` 11 次。目录顺序就是依赖方向：
+**分组不是凭手感，是照着依赖图来的。** 先把 `from "./x.js"` 全部抽出来数了一遍：三个入口（`cli` / `api` / `mcp`）、类型底座被依赖 19 次、`graph.ts` 11 次。目录顺序就是依赖方向：
 
 ```
-core      跨切面基础与共享类型（model / plan / limits / failure / log / trace / env）
+core      跨切面基础与共享类型（analysis / plan / limits / failure / log / trace / env）
   ↓
 scan      从磁盘到语义图（scanner / alias / graph / stack / locate）
   ↓
@@ -372,4 +372,26 @@ report / task
 
 变异测试验过它抓得住四种破坏方式：`core` 反向依赖 `scan`、`scan` 依赖根目录、往根目录扔文件、新建一个没登记的目录。
 
-一个遗留的命名问题**没有一起改**：`core/model.ts` 是**代码模型**（文件、符号、关系），和 `agent/llm.ts` 里的 LLM `Model` 是两回事，在一个既做代码分析又调大模型的项目里这个名字有歧义。但**移动和改名混在一个提交里会让 review 变得不可能**——移动是机械的、可以整体信任，改名要逐处判断。留作单独一次。
+分层时有一个命名问题**刻意没有一起改**：`core/model.ts` 是代码模型，`agent/llm.ts` 里的 `Model` 是大模型。**移动和改名混在一个提交里会让 review 变得不可能**——移动是机械的、可以整体信任，改名要逐处判断语义；混在一起，review 的人只能把整个 diff 逐行重读一遍，这个 diff 的可信度就归零了。所以留作了单独一次，就是下面这节。
+
+## 23. 把 `model` 这个词拆开
+
+在一个**既做代码分析、又调大模型**的项目里，`model` 是全仓最有歧义的一个词。歧义不是抽象的，它有具体的犯罪现场——`agent/ask.ts` 的 import 区里，两种 model 会挨在一起出现：
+
+```ts
+import type { Model } from "./llm.js";            // 大模型
+import type { FileNode } from "../core/model.js"; // 代码模型
+```
+
+读的人得先分辨这是哪个 model，才能往下读。**两边同时改**，各自取一个不会撞的名字：
+
+| 原 | 现 | 理由 |
+| --- | --- | --- |
+| `core/model.ts` | `core/analysis.ts` | 文件里每样东西都是 `AnalysisResult` 的组成部分或输入 |
+| `agent/llm.ts` 的 `Model` | `LanguageModel` | 沿用 ai-sdk 自己的叫法，不自创词 |
+
+`core/analysis.ts` 和 `analyze/` 层看着像撞车，其实是**名词与动词**：前者是分析结果的形状，后者是做分析的逻辑。形状放在 `core` 是因为 `report` / `refactor` / `task` 都要认这套结构，但它们不该为此依赖分析逻辑——这正是分层要拦的事。
+
+顺手补掉一处真问题：`agent/narrate.ts` 里**自己复制了一份** `type Model = Parameters<typeof generateObject>[0]["model"]`。同一个类型两处定义，升级 ai-sdk 时只改一处就会静默地对不上。改名逼着把每一处都看了一遍，这种复制才浮出来——**这也是「机械移动」和「逐处改名」必须分开做的另一个原因**：前者不会让人发现任何东西。
+
+改名不需要新增测试：`tests/layering.test.ts` 认的是目录不是文件名，162 条既有测试和类型检查已经足够保证「没改漏、没改错」。**为一次纯改名去加断言，是在给重命名这件事本身写测试**，没有意义。

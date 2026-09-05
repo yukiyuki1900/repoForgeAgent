@@ -1,7 +1,7 @@
 import { generateObject } from "ai";
 import { z } from "zod";
 import { renderProposalFacts, type ProposalFacts } from "../analyze/facts.js";
-import type { Model } from "../agent/llm.js";
+import type { LanguageModel } from "../agent/llm.js";
 import { stepSignal, TIMEOUTS } from "../core/limits.js";
 
 /**
@@ -111,7 +111,7 @@ const SYSTEM_PROMPT = [
 ].join("\n");
 
 export async function proposeCleanup(
-  model: Model,
+  model: LanguageModel,
   facts: ProposalFacts,
   signal?: AbortSignal,
 ): Promise<ProposeResult> {

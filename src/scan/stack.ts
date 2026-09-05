@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { StackResult } from "../core/model.js";
+import type { StackResult } from "../core/analysis.js";
 
 /**
  * 技术栈识别。

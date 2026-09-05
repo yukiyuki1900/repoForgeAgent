@@ -11,7 +11,7 @@ import {
   type DeadExportPlan,
 } from "../analyze/deadexports.js";
 import { openSemanticProject } from "../scan/graph.js";
-import type { FileNode } from "../core/model.js";
+import type { FileNode } from "../core/analysis.js";
 import { scanFiles } from "../scan/scanner.js";
 import {
   captureDiff,
