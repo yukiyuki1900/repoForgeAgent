@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { ts, type Project } from "ts-morph";
-import { TaskError } from "./failure.js";
-import { TIMEOUTS } from "./limits.js";
+import { TaskError } from "../core/failure.js";
+import { TIMEOUTS } from "../core/limits.js";
 
 /**
  * 改造的验证骨架。

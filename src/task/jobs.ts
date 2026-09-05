@@ -1,14 +1,14 @@
 import { readFileSync } from "node:fs";
-import { analyzeCycles } from "./analyzers.js";
-import { applyTypeOnlyRefactor } from "./apply.js";
-import { askCodebase, type AskResult } from "./ask.js";
-import { extractGraph } from "./graph.js";
-import type { Model } from "./llm.js";
-import { formatPlan, planTypeOnlyRefactor, type RefactorPlan } from "./refactor.js";
-import { scanFiles } from "./scanner.js";
+import { analyzeCycles } from "../analyze/analyzers.js";
+import { applyTypeOnlyRefactor } from "../refactor/apply.js";
+import { askCodebase, type AskResult } from "../agent/ask.js";
+import { extractGraph } from "../scan/graph.js";
+import type { Model } from "../agent/llm.js";
+import { formatPlan, planTypeOnlyRefactor, type RefactorPlan } from "../refactor/refactor.js";
+import { scanFiles } from "../scan/scanner.js";
 import type { TaskEvent } from "./tasks.js";
-import { buildIndex, PREVIEW, previewOf } from "./tools.js";
-import { TaskError } from "./failure.js";
+import { buildIndex, PREVIEW, previewOf } from "../agent/tools.js";
+import { TaskError } from "../core/failure.js";
 
 /**
  * 任务体：三种模式各自「干什么」。

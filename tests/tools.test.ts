@@ -3,14 +3,14 @@ import path from "node:path";
 import { before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { MockLanguageModelV1, simulateReadableStream } from "ai/test";
-import { askCodebase } from "../src/ask.js";
+import { askCodebase } from "../src/agent/ask.js";
 import {
   buildIndex,
   type CodebaseIndex,
   createTools,
   PREVIEW,
   previewOf,
-} from "../src/tools.js";
+} from "../src/agent/tools.js";
 
 /**
  * Agent 的评估分两层，混在一起就什么都测不了：
@@ -259,10 +259,7 @@ describe("工具层", () => {
 
     const call = seen.at(-1)!;
     assert.equal(call.result?.length, PREVIEW.result, "超出上限必须截断到上限");
-    assert.ok(
-      (call.resultOmitted ?? 0) > 0,
-      "静默截断会让人以为看到了全部，省略量必须说出来",
-    );
+    assert.ok((call.resultOmitted ?? 0) > 0, "静默截断会让人以为看到了全部，省略量必须说出来");
   });
 
   it("没被截断时不写省略量", async () => {
@@ -406,7 +403,6 @@ describe("循环层", () => {
     assert.notEqual(seen, controller.signal, "必须是合成信号：任务级取消 + 单轮超时");
     assert.equal(seen?.aborted, false);
   });
-
 
   it("查一次工具就能回答时，只走两轮", async () => {
     const model = scriptedModel([

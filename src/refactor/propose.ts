@@ -1,8 +1,8 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import { renderProposalFacts, type ProposalFacts } from "./facts.js";
-import type { Model } from "./llm.js";
-import { stepSignal, TIMEOUTS } from "./limits.js";
+import { renderProposalFacts, type ProposalFacts } from "../analyze/facts.js";
+import type { Model } from "../agent/llm.js";
+import { stepSignal, TIMEOUTS } from "../core/limits.js";
 
 /**
  * 让模型对「规则主动放弃的那部分」提方案。
@@ -35,9 +35,7 @@ export const operationSchema = z.object({
     .enum(["delete-file", "unexport", "delete-declaration"])
     .describe("要执行的动作。delete-file 删整个文件，其余两个针对单个符号"),
   file: z.string().describe("目标文件的仓库相对路径"),
-  symbol: z
-    .string()
-    .describe("目标符号名。op 为 delete-file 时填空字符串"),
+  symbol: z.string().describe("目标符号名。op 为 delete-file 时填空字符串"),
 });
 
 export const predictionSchema = z.object({
@@ -46,11 +44,7 @@ export const predictionSchema = z.object({
     .int()
     .positive()
     .describe("执行这个方案后，全仓具名导出总数会减少多少个。必须是准确数字，执行后会逐一核对"),
-  filesRemoved: z
-    .number()
-    .int()
-    .nonnegative()
-    .describe("会删掉几个文件。不删文件时填 0"),
+  filesRemoved: z.number().int().nonnegative().describe("会删掉几个文件。不删文件时填 0"),
 });
 
 export const proposalSchema = z.object({

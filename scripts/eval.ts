@@ -17,18 +17,18 @@ import { readdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { analyzeCycles, calculateMetrics } from "../src/analyzers.js";
-import { planTypeOnlyRefactor } from "../src/refactor.js";
-import { analyzeArchitecture } from "../src/architecture.js";
+import { analyzeCycles, calculateMetrics } from "../src/analyze/analyzers.js";
+import { planTypeOnlyRefactor } from "../src/refactor/refactor.js";
+import { analyzeArchitecture } from "../src/analyze/architecture.js";
 import {
   analyzeDeadExports,
   planDeadExportRemoval,
   toDeadExportFindings,
-} from "../src/deadexports.js";
-import { extractGraph } from "../src/graph.js";
-import { buildNarrationContext, estimateContextTokens } from "../src/narrate.js";
-import { scanFiles } from "../src/scanner.js";
-import { detectStack } from "../src/stack.js";
+} from "../src/analyze/deadexports.js";
+import { extractGraph } from "../src/scan/graph.js";
+import { buildNarrationContext, estimateContextTokens } from "../src/agent/narrate.js";
+import { scanFiles } from "../src/scan/scanner.js";
+import { detectStack } from "../src/scan/stack.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const FIXTURES_DIR = path.join(ROOT, "fixtures");

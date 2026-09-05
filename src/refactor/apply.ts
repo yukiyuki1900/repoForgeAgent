@@ -1,11 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ImportDeclaration } from "ts-morph";
-import { analyzeCycles } from "./analyzers.js";
-import { extractGraph, openSemanticProject } from "./graph.js";
-import type { FileNode, Finding, RelationEdge } from "./model.js";
+import { analyzeCycles } from "../analyze/analyzers.js";
+import { extractGraph, openSemanticProject } from "../scan/graph.js";
+import type { FileNode, Finding, RelationEdge } from "../core/model.js";
 import { planTypeOnlyRefactor, type ImportCandidate, type RefactorPlan } from "./refactor.js";
-import { scanFiles } from "./scanner.js";
+import { scanFiles } from "../scan/scanner.js";
 import {
   captureDiff,
   collectDiagnostics,

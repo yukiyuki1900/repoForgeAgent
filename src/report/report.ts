@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AnalysisResult, Narration } from "./model.js";
-import { INTENT_LABEL, type ExecutionPlan } from "./plan.js";
+import type { AnalysisResult, Narration } from "../core/model.js";
+import { INTENT_LABEL, type ExecutionPlan } from "../core/plan.js";
 
 export async function renderReports(root: string, result: AnalysisResult): Promise<string[]> {
   const dir = path.join(root, ".reposurgeon", "reports");

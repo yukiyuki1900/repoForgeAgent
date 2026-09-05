@@ -9,10 +9,10 @@ import {
   type BlockedRemoval,
   type DeadExportEdit,
   type DeadExportPlan,
-} from "./deadexports.js";
-import { openSemanticProject } from "./graph.js";
-import type { FileNode } from "./model.js";
-import { scanFiles } from "./scanner.js";
+} from "../analyze/deadexports.js";
+import { openSemanticProject } from "../scan/graph.js";
+import type { FileNode } from "../core/model.js";
+import { scanFiles } from "../scan/scanner.js";
 import {
   captureDiff,
   collectDiagnostics,

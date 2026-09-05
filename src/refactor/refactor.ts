@@ -1,13 +1,13 @@
 import path from "node:path";
 import { Node, SyntaxKind, ts, type ImportDeclaration, type SourceFile } from "ts-morph";
-import { analyzeCycles } from "./analyzers.js";
+import { analyzeCycles } from "../analyze/analyzers.js";
 import {
   erasedAtRuntime,
   openSemanticProject,
   type ParsedFile,
   type SemanticProject,
-} from "./graph.js";
-import type { FileNode, Finding, RelationEdge } from "./model.js";
+} from "../scan/graph.js";
+import type { FileNode, Finding, RelationEdge } from "../core/model.js";
 
 /**
  * 用 `import type` 打破循环依赖。

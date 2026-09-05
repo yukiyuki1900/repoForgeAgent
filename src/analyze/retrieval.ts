@@ -1,4 +1,4 @@
-import type { FileNode, RelationEdge, SymbolNode } from "./model.js";
+import type { FileNode, RelationEdge, SymbolNode } from "../core/model.js";
 
 export interface QueryPlan {
   concepts: string[];

@@ -3,9 +3,9 @@ import path from "node:path";
 import { before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { MockLanguageModelV1 } from "ai/test";
-import { collectProposalFacts, type ProposalFacts } from "../src/facts.js";
-import { proposeCleanup } from "../src/propose.js";
-import { scanFiles } from "../src/scanner.js";
+import { collectProposalFacts, type ProposalFacts } from "../src/analyze/facts.js";
+import { proposeCleanup } from "../src/refactor/propose.js";
+import { scanFiles } from "../src/scan/scanner.js";
 
 /**
  * 模型提方案这一层。

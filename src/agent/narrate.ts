@@ -1,6 +1,6 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import type { ArchitectureReport } from "./architecture.js";
+import type { ArchitectureReport } from "../analyze/architecture.js";
 import type {
   FileNode,
   Finding,
@@ -8,8 +8,8 @@ import type {
   RelationEdge,
   StackResult,
   SymbolNode,
-} from "./model.js";
-import { stepSignal, TIMEOUTS } from "./limits.js";
+} from "../core/model.js";
+import { stepSignal, TIMEOUTS } from "../core/limits.js";
 
 /**
  * 架构叙述节点的上下文构建与模型调用。

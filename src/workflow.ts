@@ -1,12 +1,12 @@
 import { setMaxListeners } from "node:events";
 import path from "node:path";
 import { Annotation, END, MemorySaver, START, StateGraph } from "@langchain/langgraph";
-import { analyzeArchitecture, type ArchitectureReport } from "./architecture.js";
-import { analyzeCycles, calculateMetrics } from "./analyzers.js";
-import { analyzeDeadExports, toDeadExportFindings } from "./deadexports.js";
-import { extractGraph, graphToMermaid } from "./graph.js";
-import { parseQueryWithModel, resolveModel } from "./llm.js";
-import { planExecution, summarizePlan, type ExecutionPlan } from "./plan.js";
+import { analyzeArchitecture, type ArchitectureReport } from "./analyze/architecture.js";
+import { analyzeCycles, calculateMetrics } from "./analyze/analyzers.js";
+import { analyzeDeadExports, toDeadExportFindings } from "./analyze/deadexports.js";
+import { extractGraph, graphToMermaid } from "./scan/graph.js";
+import { parseQueryWithModel, resolveModel } from "./agent/llm.js";
+import { planExecution, summarizePlan, type ExecutionPlan } from "./core/plan.js";
 import type {
   AnalysisResult,
   FileNode,
@@ -15,23 +15,23 @@ import type {
   RelationEdge,
   StackResult,
   SymbolNode,
-} from "./model.js";
+} from "./core/model.js";
 import {
   buildNarrationContext,
   estimateContextTokens,
   narrateWithModel,
   type NarrationContext,
-} from "./narrate.js";
+} from "./agent/narrate.js";
 import {
   hybridRetrieve,
   parseQueryPlan,
   type QueryPlan,
   type RetrievalResult,
-} from "./retrieval.js";
-import { renderReports } from "./report.js";
-import { scanFiles } from "./scanner.js";
-import { detectStack } from "./stack.js";
-import { saveCheckpoint, saveIndex } from "./storage.js";
+} from "./analyze/retrieval.js";
+import { renderReports } from "./report/report.js";
+import { scanFiles } from "./scan/scanner.js";
+import { detectStack } from "./scan/stack.js";
+import { saveCheckpoint, saveIndex } from "./report/storage.js";
 
 // 单写者通道统一使用「后写入覆盖先前值」的 reducer
 const State = Annotation.Root({
@@ -74,10 +74,7 @@ const State = Annotation.Root({
 export type WorkflowState = typeof State.State;
 
 type QueryPlanner = (query: string) => QueryPlan | Promise<QueryPlan>;
-type Narrator = (
-  context: NarrationContext,
-  signal?: AbortSignal,
-) => Promise<Narration | undefined>;
+type Narrator = (context: NarrationContext, signal?: AbortSignal) => Promise<Narration | undefined>;
 type Planner = (
   input: Parameters<typeof planExecution>[0],
 ) => ExecutionPlan | Promise<ExecutionPlan>;

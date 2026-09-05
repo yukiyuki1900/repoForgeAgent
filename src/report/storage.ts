@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { AnalysisResult } from "./model.js";
+import type { AnalysisResult } from "../core/model.js";
 
 /**
  * SQLite 索引是**加分项，不是主产物**。

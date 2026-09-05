@@ -1,6 +1,6 @@
-import { collectProposalFacts, type ProposalFacts } from "./facts.js";
-import type { Model } from "./llm.js";
-import type { FileNode } from "./model.js";
+import { collectProposalFacts, type ProposalFacts } from "../analyze/facts.js";
+import type { Model } from "../agent/llm.js";
+import type { FileNode } from "../core/model.js";
 import { proposeCleanup, type Proposal } from "./propose.js";
 import { validateProposals, type ValidationResult } from "./validate.js";
 
@@ -131,9 +131,7 @@ export function formatProposalFlow(flow: ProposalFlow): string {
   if (rejected.length > 0) {
     lines.push(`${rejected.length} 条方案未通过静态校验（不进入上面的列表，但可查）：`);
     for (const item of rejected) {
-      lines.push(
-        `    ${item.proposal.targetFile}#${item.proposal.targetSymbol}  ${item.reason}`,
-      );
+      lines.push(`    ${item.proposal.targetFile}#${item.proposal.targetSymbol}  ${item.reason}`);
     }
     lines.push("");
   }

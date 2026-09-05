@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { Command } from "commander";
-import { analyzeCycles } from "./analyzers.js";
-import { applyTypeOnlyRefactor, formatApplyResult } from "./apply.js";
-import { askCodebase, formatAskResult } from "./ask.js";
-import { planDeadExportRemoval } from "./deadexports.js";
-import { loadEnv } from "./env.js";
-import { applyProposal, formatExecution } from "./execute.js";
-import { resolveModel } from "./llm.js";
-import { buildIndex } from "./tools.js";
-import { extractGraph } from "./graph.js";
-import { applyDeadExportRemoval, formatPruneResult } from "./prune.js";
-import { formatProposalFlow, proposeAndValidate } from "./proposalflow.js";
-import { formatPlan, planTypeOnlyRefactor } from "./refactor.js";
-import { scanFiles } from "./scanner.js";
+import { analyzeCycles } from "./analyze/analyzers.js";
+import { applyTypeOnlyRefactor, formatApplyResult } from "./refactor/apply.js";
+import { askCodebase, formatAskResult } from "./agent/ask.js";
+import { planDeadExportRemoval } from "./analyze/deadexports.js";
+import { loadEnv } from "./core/env.js";
+import { applyProposal, formatExecution } from "./refactor/execute.js";
+import { resolveModel } from "./agent/llm.js";
+import { buildIndex } from "./agent/tools.js";
+import { extractGraph } from "./scan/graph.js";
+import { applyDeadExportRemoval, formatPruneResult } from "./refactor/prune.js";
+import { formatProposalFlow, proposeAndValidate } from "./refactor/proposalflow.js";
+import { formatPlan, planTypeOnlyRefactor } from "./refactor/refactor.js";
+import { scanFiles } from "./scan/scanner.js";
 import { runAnalysis, type ProgressEvent, type WorkflowState } from "./workflow.js";
 
 interface AnalyzeOptions {

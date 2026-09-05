@@ -4,9 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { applyProposal } from "../src/execute.js";
-import type { Proposal } from "../src/propose.js";
-import { scanFiles } from "../src/scanner.js";
+import { applyProposal } from "../src/refactor/execute.js";
+import type { Proposal } from "../src/refactor/propose.js";
+import { scanFiles } from "../src/scan/scanner.js";
 
 /**
  * 执行模型方案的端到端验证。
@@ -109,11 +109,7 @@ describe("applyProposal", () => {
     assert.equal(result.typecheck?.introduced.length, 0);
     assert.equal(exists(dir, "src/dead.ts"), false);
     assert.equal(result.exports?.actual, result.exports?.predicted);
-    assert.equal(
-      result.exports?.before - result.exports?.actual,
-      2,
-      "导出应当恰好少 2 个",
-    );
+    assert.equal(result.exports?.before - result.exports?.actual, 2, "导出应当恰好少 2 个");
     assert.deepEqual(result.files, { predicted: 1, actual: 1, survived: [] });
 
     // 其它文件一个字节都不该动
@@ -150,7 +146,10 @@ describe("applyProposal", () => {
       files,
       contents,
       // 方案本身能执行，只是模型说会少 5 个导出，实际只会少 2 个
-      proposal: { ...structuredClone(deleteDeadFile), prediction: { exportsRemoved: 5, filesRemoved: 1 } },
+      proposal: {
+        ...structuredClone(deleteDeadFile),
+        prediction: { exportsRemoved: 5, filesRemoved: 1 },
+      },
     });
 
     assert.equal(result.status, "rolled-back");

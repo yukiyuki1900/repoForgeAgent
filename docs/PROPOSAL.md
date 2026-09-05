@@ -51,7 +51,7 @@ unexport-symbol            src/lib.ts      publicApi 被判「入口导出即对
 
 ## 二、模型看得到什么
 
-`src/facts.ts` 负责把事实打包。对每个候选提供：
+`src/analyze/facts.ts` 负责把事实打包。对每个候选提供：
 
 | 字段 | 为什么需要 |
 |---|---|
@@ -74,7 +74,7 @@ unexport-symbol            src/lib.ts      publicApi 被判「入口导出即对
 
 ### 实现状态
 
-`src/facts.ts` 已完成（C1）。实测 `18-dead-exports` 的 11 个候选渲染后约 **985 token**，离预算很远——上限主要是给大仓准备的。
+`src/analyze/facts.ts` 已完成（C1）。实测 `18-dead-exports` 的 11 个候选渲染后约 **985 token**，离预算很远——上限主要是给大仓准备的。
 
 上下文用 Markdown 而不是 JSON：同样的信息，JSON 里源码要整段转义，换行变 `\n`、引号变 `\"`，既占 token 又难读。
 
@@ -82,7 +82,7 @@ unexport-symbol            src/lib.ts      publicApi 被判「入口导出即对
 
 ## 二点五、schema 的两个实现决定（C2）
 
-`src/propose.ts` 已完成。
+`src/refactor/propose.ts` 已完成。
 
 **operation 用扁平结构，不用 discriminated union。** 结构化输出对嵌套 union 的支持在各家网关上表现不一，而这里真正需要 schema 保证的只有「字段类型对」。**哪些字段组合合法是语义问题，交给 C3**——那一层能查符号是否真的存在，schema 查不了。
 
@@ -183,7 +183,7 @@ import type 破环   语义等价的机械变换          →  可以全自动
 
 模型输出之后、给人看之前，逐条核对。**模型编一个不存在的符号名是常态，不是异常。**
 
-`src/validate.ts` 已完成。核心立场：**不采信模型说的任何一个事实**——符号存不存在、引用有几处、文件有没有人 import，全部对着 AST 重新查一遍。模型贡献的只有「该不该动、怎么动」这个判断。
+`src/refactor/validate.ts` 已完成。核心立场：**不采信模型说的任何一个事实**——符号存不存在、引用有几处、文件有没有人 import，全部对着 AST 重新查一遍。模型贡献的只有「该不该动、怎么动」这个判断。
 
 | 检查 | 不通过的处理 |
 |---|---|
@@ -221,7 +221,7 @@ C4（执行后）  静态计算   vs  重扫仓库的实测值   →  执行偏�
 
 ## 七、执行与对账（C4）
 
-`src/execute.ts` 已完成。验证骨架整个复用 `verify.ts`，改写原语（`unexport` / `remove`）从 `prune.ts` 导出复用——**改写动作只有一份实现**，否则两条链路的行为迟早会分叉，而分叉的那一刻两边的验证都还是绿的。
+`src/refactor/execute.ts` 已完成。验证骨架整个复用 `verify.ts`，改写原语（`unexport` / `remove`）从 `prune.ts` 导出复用——**改写动作只有一份实现**，否则两条链路的行为迟早会分叉，而分叉的那一刻两边的验证都还是绿的。
 
 ```
 第一层  类型不新增错误                        （verify.ts 已有）
@@ -250,7 +250,7 @@ C4（执行后）  静态计算   vs  重扫仓库的实测值   →  执行偏�
 
 ## 七点五、交互（C5）
 
-`src/proposalflow.ts` 把三段串起来：收集事实 → 模型提 → 静态校验 → **交给人看，到此为止**。
+`src/refactor/proposalflow.ts` 把三段串起来：收集事实 → 模型提 → 静态校验 → **交给人看，到此为止**。
 
 编排本身只有二十来行，值得单列一个文件的理由是它划出了自动化的终点：这个函数返回方案列表就结束了，不会顺手执行任何一条。
 

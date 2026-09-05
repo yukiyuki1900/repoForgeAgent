@@ -3,9 +3,9 @@ import path from "node:path";
 import { before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { MockLanguageModelV1 } from "ai/test";
-import type { FileNode } from "../src/model.js";
-import { formatProposalFlow, proposeAndValidate } from "../src/proposalflow.js";
-import { scanFiles } from "../src/scanner.js";
+import type { FileNode } from "../src/core/model.js";
+import { formatProposalFlow, proposeAndValidate } from "../src/refactor/proposalflow.js";
+import { scanFiles } from "../src/scan/scanner.js";
 
 /**
  * 提方案这条链路的编排。

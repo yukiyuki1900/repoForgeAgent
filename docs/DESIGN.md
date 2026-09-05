@@ -4,7 +4,7 @@
 
 ## 1. 检索单位是符号与依赖闭包，不是文本片段
 
-`src/graph.ts` 用 ts-morph 建立语义图，模块解析直接交给 TypeScript 编译器，因此 tsconfig `paths`、`baseUrl`、index 解析、扩展名补全全部由编译器负责。TS 认不了的扩展名（`.vue`）走手工回退。
+`src/scan/graph.ts` 用 ts-morph 建立语义图，模块解析直接交给 TypeScript 编译器，因此 tsconfig `paths`、`baseUrl`、index 解析、扩展名补全全部由编译器负责。TS 认不了的扩展名（`.vue`）走手工回退。
 
 这不是锦上添花。早期的正则实现只认相对路径，在使用 alias 的仓库上依赖图会大面积残缺，循环依赖检测形同虚设：
 
@@ -22,7 +22,7 @@
 
 前端项目普遍只在 `vite.config` / `webpack.config` 里写 alias，而不同步到 tsconfig。只读 tsconfig 会漏掉大量依赖——实测那个 Vue 仓库因此丢了 84 处导入，且全部集中在 pages / components / layouts 这些最关键的位置。
 
-所以 `src/alias.ts` 会解析构建配置，但**只做 AST 提取，不执行文件**：配置是别人的代码，执行它既不安全，也会因为依赖环境变量、插件、动态导入而频繁失败。
+所以 `src/scan/alias.ts` 会解析构建配置，但**只做 AST 提取，不执行文件**：配置是别人的代码，执行它既不安全，也会因为依赖环境变量、插件、动态导入而频繁失败。
 
 代价是覆盖不了动态生成的 alias。支持的写法：
 
@@ -50,7 +50,7 @@
 
 ## 4. 上下文是压缩过的，且裁剪不静默
 
-符号图直接序列化会轻松几十万 token。`src/narrate.ts` 把它压成分层摘要：目录级聚合、top-N 热点、环及建议切点、按规则聚合的问题统计。
+符号图直接序列化会轻松几十万 token。`src/agent/narrate.ts` 把它压成分层摘要：目录级聚合、top-N 热点、环及建议切点、按规则聚合的问题统计。
 
 裁剪预算集中在 `LIMITS` 常量，`truncated` 字段**显式记录每个类目被裁掉多少**，prompt 里也要求模型不要把已列出的当成全部。
 
@@ -262,7 +262,7 @@ START → loadRepository → scanFiles → detectStack → plan     ← 决策�
 
 **下界由合法最坏路径决定**（短于它就误杀正常任务，原来那个五分钟对 `ask` 正是这个毛病）；**上界由内存决定**（一个 running 任务攥着整个 `CodebaseIndex`，卡死的任务要占着它直到超时）。这也是为什么总时长可以定得宽：**它不服务于用户体验，只服务于资源回收**——服务用户体验的是另外两件事，界面上一直有反馈、随时能停，那两件到位之后 5 分钟还是 10 分钟用户根本感知不到，他早就点停止了。
 
-推导过程写在 [src/limits.ts](../src/limits.ts) 里而不只是这里，因为下一个改这几个数的人打开的是代码。公式里还剩一个未知数——同步部分随规模怎么增长目前只有一个数据点，那个 15 倍系数是猜的。
+推导过程写在 [src/core/limits.ts](../src/core/limits.ts) 里而不只是这里，因为下一个改这几个数的人打开的是代码。公式里还剩一个未知数——同步部分随规模怎么增长目前只有一个数据点，那个 15 倍系数是猜的。
 
 **SSE 是传输格式，EventSource 是浏览器给它配的一个客户端——换掉的是后者。** 这两件事经常被混为一谈，而混淆的代价是把「客户端的缺陷」误记成「协议的缺陷」。`text/event-stream` 那套分帧没有任何问题（OpenAI、Anthropic 的流式接口用的都是它，Anthropic 的 `content_block_delta` 这类结构化事件也全放在 `data:` 里）。信封只负责三件事：分帧、事件名、续传编号；剩下的是 JSON schema 的活。
 
@@ -343,3 +343,33 @@ server.registerTool(name, {
 所以建立传输之前先把 `console.log` / `info` / `warn` 改道到 stderr。日志不丢，只是换条道走。
 
 这条也决定了测试怎么写：MCP 的测试**故意挑了会打印 alias 日志的 fixture**（`11-vite-alias`）。如果重定向失效，握手就直接失败——**能连上本身就是一条断言**，比事后 grep stdout 可靠得多。
+
+## 22. 源码分层，而且用测试锁住
+
+`src/` 原来是 36 个文件平铺在一级目录里。一个专门用来「发现别人仓库结构问题」的工具，自己的源码没有可见结构，这本身就说不过去。
+
+**分组不是凭手感，是照着依赖图来的。** 先把 `from "./x.js"` 全部抽出来数了一遍：三个入口（`cli` / `api` / `mcp`）、`model.ts` 被依赖 19 次是类型底座、`graph.ts` 11 次。目录顺序就是依赖方向：
+
+```
+core      跨切面基础与共享类型（model / plan / limits / failure / log / trace / env）
+  ↓
+scan      从磁盘到语义图（scanner / alias / graph / stack / locate）
+  ↓
+analyze   只读分析（analyzers / architecture / deadexports / facts / retrieval）
+  ↓
+agent     模型与工具（llm / tools / ask / narrate）
+  ↓
+refactor  改造与验证（refactor / apply / prune / verify / execute / propose / validate / proposalflow）
+  ↓
+report / task
+  ↓
+根目录     cli · api · mcp · workflow
+```
+
+根目录只留三个入口和顶层编排 `workflow.ts`——**根目录是最容易变回垃圾场的地方**，谁都能往里扔一个「暂时不知道放哪」的文件，扔够十个就退回原样了。
+
+**真正的重点是 `tests/layering.test.ts`。** 一次性整理毫无价值：下一个人加一行 import 就能把方向破坏掉，而没有任何东西会因此变红——**这正是循环依赖长出来的方式，也是这个项目天天在别人仓库里检出的那种问题**。四条断言分别锁住：每个文件都属于已登记的层、依赖只能自上而下、根目录只有那四个文件、`core` 不依赖任何其它层。
+
+变异测试验过它抓得住四种破坏方式：`core` 反向依赖 `scan`、`scan` 依赖根目录、往根目录扔文件、新建一个没登记的目录。
+
+一个遗留的命名问题**没有一起改**：`core/model.ts` 是**代码模型**（文件、符号、关系），和 `agent/llm.ts` 里的 LLM `Model` 是两回事，在一个既做代码分析又调大模型的项目里这个名字有歧义。但**移动和改名混在一个提交里会让 review 变得不可能**——移动是机械的、可以整体信任，改名要逐处判断。留作单独一次。

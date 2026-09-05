@@ -6,11 +6,11 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { loadEnv } from "./env.js";
-import { runAskJob, runRefactorJob } from "./jobs.js";
-import { resolveModel } from "./llm.js";
-import { locateDirectories, type Fingerprint } from "./locate.js";
-import { readLatestRun, readRunSummaries } from "./storage.js";
+import { loadEnv } from "./core/env.js";
+import { runAskJob, runRefactorJob } from "./task/jobs.js";
+import { resolveModel } from "./agent/llm.js";
+import { locateDirectories, type Fingerprint } from "./scan/locate.js";
+import { readLatestRun, readRunSummaries } from "./report/storage.js";
 import {
   attachStream,
   cancelTask,
@@ -19,10 +19,10 @@ import {
   summaryOf,
   toResponse,
   type TaskRecord,
-} from "./tasks.js";
+} from "./task/tasks.js";
 import { runAnalysis } from "./workflow.js";
-import { TIMEOUTS } from "./limits.js";
-import { parseTraceparent, type TraceContext } from "./trace.js";
+import { TIMEOUTS } from "./core/limits.js";
+import { parseTraceparent, type TraceContext } from "./core/trace.js";
 
 // 必须在读取任何配置之前加载
 loadEnv();

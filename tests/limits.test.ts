@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { MockLanguageModelV1 } from "ai/test";
-import { stepSignal, TIMEOUTS } from "../src/limits.js";
-import type { NarrationContext } from "../src/narrate.js";
-import { narrateWithModel } from "../src/narrate.js";
+import { stepSignal, TIMEOUTS } from "../src/core/limits.js";
+import type { NarrationContext } from "../src/agent/narrate.js";
+import { narrateWithModel } from "../src/agent/narrate.js";
 
 /**
  * 超时阈值。
@@ -90,9 +90,7 @@ describe("模型调用的单步超时", () => {
       },
     });
 
-    await narrateWithModel(model, {} as NarrationContext, controller.signal).catch(
-      () => undefined,
-    );
+    await narrateWithModel(model, {} as NarrationContext, controller.signal).catch(() => undefined);
 
     assert.ok(seen, "模型调用必须带 signal");
     assert.notEqual(seen, controller.signal, "必须是合成信号：任务级取消 + 单步超时");

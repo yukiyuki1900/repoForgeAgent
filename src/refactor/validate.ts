@@ -3,10 +3,10 @@ import {
   isPureExpression,
   locateAnyDeclaration,
   locateExportedStatement,
-} from "./deadexports.js";
-import { isWholeFileDead, type ProposalCandidate, type ProposalFacts } from "./facts.js";
-import { openSemanticProject, type SemanticProject } from "./graph.js";
-import type { FileNode } from "./model.js";
+} from "../analyze/deadexports.js";
+import { isWholeFileDead, type ProposalCandidate, type ProposalFacts } from "../analyze/facts.js";
+import { openSemanticProject, type SemanticProject } from "../scan/graph.js";
+import type { FileNode } from "../core/model.js";
 import type { Proposal } from "./propose.js";
 
 /**
@@ -133,7 +133,10 @@ function check(proposal: Proposal, context: CheckContext): string | undefined {
     if (operation.op === "delete-file") continue;
 
     if (!operation.symbol) return `${operation.op} 缺少符号名`;
-    if (!locateExportedStatement(source, operation.symbol) && !locateAnyDeclaration(source, operation.symbol)) {
+    if (
+      !locateExportedStatement(source, operation.symbol) &&
+      !locateAnyDeclaration(source, operation.symbol)
+    ) {
       return `${operation.file} 里找不到符号 ${operation.symbol}`;
     }
 
@@ -208,7 +211,8 @@ function checkByKind(
     // 三个前置全部重新查一遍，不看模型怎么说
     if (!isWholeFileDead(candidate)) {
       const why: string[] = [];
-      if (candidate.fileInboundCount > 0) why.push(`被 ${candidate.fileInboundCount} 个文件 import`);
+      if (candidate.fileInboundCount > 0)
+        why.push(`被 ${candidate.fileInboundCount} 个文件 import`);
       if (candidate.fileHasTopLevelSideEffects) why.push("顶层有副作用语句");
       if (candidate.siblingExports.dead < candidate.siblingExports.total) {
         why.push(
@@ -249,7 +253,8 @@ function checkByKind(
   const targetNode = targetSource && locateExportedStatement(targetSource, head.symbol);
   if (!targetNode) return `${head.file} 里找不到导出的 ${head.symbol}`;
 
-  const targetStatement = targetNode.getFirstAncestorByKind(SyntaxKind.VariableStatement) ?? targetNode;
+  const targetStatement =
+    targetNode.getFirstAncestorByKind(SyntaxKind.VariableStatement) ?? targetNode;
   const [start, end] = [targetStatement.getStart(), targetStatement.getEnd()];
 
   for (const operation of dependencies) {
@@ -270,11 +275,7 @@ function checkByKind(
     }
 
     const only = references[0];
-    if (
-      operation.file !== head.file ||
-      only.getStart() < start ||
-      only.getEnd() > end
-    ) {
+    if (operation.file !== head.file || only.getStart() < start || only.getEnd() > end) {
       return `${operation.symbol} 唯一的引用不在 ${head.symbol} 的声明内部，不能连带删除`;
     }
   }
@@ -317,9 +318,7 @@ function countAllReferences(node: Node): Node[] | undefined {
   if (!identifier) return undefined;
 
   try {
-    return identifier
-      .findReferencesAsNodes()
-      .filter((reference) => reference !== identifier);
+    return identifier.findReferencesAsNodes().filter((reference) => reference !== identifier);
   } catch {
     return undefined;
   }
@@ -353,9 +352,7 @@ export function formatValidation(result: ValidationResult): string {
   if (result.rejected.length > 0) {
     lines.push(`${result.rejected.length} 条方案未通过静态校验：`);
     for (const item of result.rejected) {
-      lines.push(
-        `  ${item.proposal.targetFile}#${item.proposal.targetSymbol}  ${item.reason}`,
-      );
+      lines.push(`  ${item.proposal.targetFile}#${item.proposal.targetSymbol}  ${item.reason}`);
     }
   }
 

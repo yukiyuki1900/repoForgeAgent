@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { planExecution } from "../src/plan.js";
+import { planExecution } from "../src/core/plan.js";
 import { createAnalysisGraph } from "../src/workflow.js";
 
 /**

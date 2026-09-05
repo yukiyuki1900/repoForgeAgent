@@ -5,8 +5,8 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { runRefactorJob } from "../src/jobs.js";
-import { TIMEOUTS } from "../src/limits.js";
+import { runRefactorJob } from "../src/task/jobs.js";
+import { TIMEOUTS } from "../src/core/limits.js";
 import {
   attachStream,
   cancelTask,
@@ -14,7 +14,7 @@ import {
   getTask,
   startTask,
   type TaskEvent,
-} from "../src/tasks.js";
+} from "../src/task/tasks.js";
 
 /**
  * 前后端契约。
@@ -401,10 +401,7 @@ describe("SSE 事件的可续传", () => {
     // 具名事件而不是 SSE 注释行（`: ping`）——注释行浏览器会吞掉，
     // JS 侧感知不到，那样只能保活代理，帮不了前端判断
     assert.match(received, /event: ping\n/, "心跳必须是具名事件");
-    assert.ok(
-      received.split("event: ping").length - 1 >= 2,
-      "心跳要持续发，只发一次等于没有",
-    );
+    assert.ok(received.split("event: ping").length - 1 >= 2, "心跳要持续发，只发一次等于没有");
     // 心跳不进 events 数组，给它编号会污染 Last-Event-ID 续传
     assert.doesNotMatch(received, /id: \d+\nevent: ping/, "心跳不该带 id");
   });

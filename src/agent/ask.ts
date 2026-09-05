@@ -1,9 +1,9 @@
 import { streamText } from "ai";
 
-import { TaskError } from "./failure.js";
+import { TaskError } from "../core/failure.js";
 import type { Model } from "./llm.js";
 import { createTools, type CodebaseIndex, type ToolCall } from "./tools.js";
-import { stepSignal, TIMEOUTS } from "./limits.js";
+import { stepSignal, TIMEOUTS } from "../core/limits.js";
 
 /**
  * 让模型自己决定查什么。

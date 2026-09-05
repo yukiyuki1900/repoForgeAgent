@@ -4,10 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, it } from "node:test";
-import { analyzeCycles } from "../src/analyzers.js";
-import { applyTypeOnlyRefactor } from "../src/apply.js";
-import { extractGraph } from "../src/graph.js";
-import { scanFiles } from "../src/scanner.js";
+import { analyzeCycles } from "../src/analyze/analyzers.js";
+import { applyTypeOnlyRefactor } from "../src/refactor/apply.js";
+import { extractGraph } from "../src/scan/graph.js";
+import { scanFiles } from "../src/scan/scanner.js";
 
 /**
  * `--apply` 的端到端验证。

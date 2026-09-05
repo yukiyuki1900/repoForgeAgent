@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 
-import { TIMEOUTS } from "./limits.js";
-import { classify, type TaskFailure } from "./failure.js";
-import { log } from "./log.js";
-import { newTrace } from "./trace.js";
+import { TIMEOUTS } from "../core/limits.js";
+import { classify, type TaskFailure } from "../core/failure.js";
+import { log } from "../core/log.js";
+import { newTrace } from "../core/trace.js";
 
 /**
  * 三种模式共用的任务机制。

@@ -1,7 +1,7 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject } from "ai";
 import { z } from "zod";
-import type { QueryPlan } from "./retrieval.js";
+import type { QueryPlan } from "../analyze/retrieval.js";
 
 export type Model = Parameters<typeof generateObject>[0]["model"];
 

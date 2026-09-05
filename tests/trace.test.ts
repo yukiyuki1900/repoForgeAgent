@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { newTrace, parseTraceparent, shortTrace } from "../src/trace.js";
+import { newTrace, parseTraceparent, shortTrace } from "../src/core/trace.js";
 
 /**
  * W3C Trace Context。

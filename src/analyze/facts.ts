@@ -5,9 +5,9 @@ import {
   planDeadExportRemoval,
   type DeadExportKind,
 } from "./deadexports.js";
-import { openSemanticProject, type SemanticProject } from "./graph.js";
-import { extractGraph } from "./graph.js";
-import type { FileNode } from "./model.js";
+import { openSemanticProject, type SemanticProject } from "../scan/graph.js";
+import { extractGraph } from "../scan/graph.js";
+import type { FileNode } from "../core/model.js";
 
 /**
  * 给模型的事实包。

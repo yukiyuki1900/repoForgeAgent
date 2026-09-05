@@ -1,12 +1,12 @@
 import path from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
-import { analyzeCycles } from "./analyzers.js";
-import { analyzeDeadExports, type DeadExportResult } from "./deadexports.js";
-import { extractGraph } from "./graph.js";
-import type { FileNode, Finding, RelationEdge, SymbolNode } from "./model.js";
-import { scanFiles } from "./scanner.js";
-import { TaskError } from "./failure.js";
+import { analyzeCycles } from "../analyze/analyzers.js";
+import { analyzeDeadExports, type DeadExportResult } from "../analyze/deadexports.js";
+import { extractGraph } from "../scan/graph.js";
+import type { FileNode, Finding, RelationEdge, SymbolNode } from "../core/model.js";
+import { scanFiles } from "../scan/scanner.js";
+import { TaskError } from "../core/failure.js";
 
 /**
  * 暴露给模型的只读工具集。

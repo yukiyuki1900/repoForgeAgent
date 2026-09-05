@@ -7,8 +7,8 @@ import {
   type Identifier,
   type SourceFile,
 } from "ts-morph";
-import { openSemanticProject, type SemanticProject } from "./graph.js";
-import type { FileNode, Finding } from "./model.js";
+import { openSemanticProject, type SemanticProject } from "../scan/graph.js";
+import type { FileNode, Finding } from "../core/model.js";
 
 /**
  * 未使用的导出检测。
@@ -25,13 +25,7 @@ import type { FileNode, Finding } from "./model.js";
  * 但不能是隐形的。看报告的人要能分辨「工具认为它活着」和「工具没看见它」。
  */
 
-export type DeadExportKind =
-  | "function"
-  | "class"
-  | "variable"
-  | "interface"
-  | "type"
-  | "enum";
+export type DeadExportKind = "function" | "class" | "variable" | "interface" | "type" | "enum";
 
 export interface DeadExport {
   /** 仓库相对路径 */

@@ -3,8 +3,8 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { ZodObject, ZodRawShape } from "zod";
-import { loadEnv } from "./env.js";
-import { buildIndex, createTools, type CodebaseIndex } from "./tools.js";
+import { loadEnv } from "./core/env.js";
+import { buildIndex, createTools, type CodebaseIndex } from "./agent/tools.js";
 
 /**
  * MCP Server：把同一套只读工具通过标准协议交出去。

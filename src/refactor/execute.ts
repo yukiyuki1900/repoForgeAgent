@@ -5,12 +5,12 @@ import {
   analyzeDeadExports,
   locateAnyDeclaration,
   locateExportedStatement,
-} from "./deadexports.js";
-import { openSemanticProject } from "./graph.js";
-import type { FileNode } from "./model.js";
+} from "../analyze/deadexports.js";
+import { openSemanticProject } from "../scan/graph.js";
+import type { FileNode } from "../core/model.js";
 import { remove, unexport } from "./prune.js";
 import type { Proposal } from "./propose.js";
-import { scanFiles } from "./scanner.js";
+import { scanFiles } from "../scan/scanner.js";
 import {
   captureDiff,
   collectDiagnostics,

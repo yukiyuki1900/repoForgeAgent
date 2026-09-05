@@ -7,8 +7,8 @@ import {
   estimateFactsTokens,
   isWholeFileDead,
   renderProposalFacts,
-} from "../src/facts.js";
-import { scanFiles } from "../src/scanner.js";
+} from "../src/analyze/facts.js";
+import { scanFiles } from "../src/scan/scanner.js";
 
 /**
  * 给模型的事实包。

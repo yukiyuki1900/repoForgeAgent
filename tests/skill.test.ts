@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildIndex, createTools } from "../src/tools.js";
+import { buildIndex, createTools } from "../src/agent/tools.js";
 
 /**
  * Skill 手册的一致性。
@@ -43,12 +43,18 @@ describe("Skill 手册", () => {
       const entry = path.join(ROOT, host, SKILL_DIR);
 
       // 副本会漂移：改了一边忘了另一边，两个客户端行为就此分叉
-      assert.ok(fs.lstatSync(entry).isSymbolicLink(), `${host}/${SKILL_DIR} 是副本，应当是符号链接`);
+      assert.ok(
+        fs.lstatSync(entry).isSymbolicLink(),
+        `${host}/${SKILL_DIR} 是副本，应当是符号链接`,
+      );
 
       // 相对链接才能跟着仓库走，绝对路径 clone 到别处就废了
       const target = fs.readlinkSync(entry);
       assert.ok(!path.isAbsolute(target), `${host} 的链接是绝对路径：${target}`);
-      assert.equal(path.resolve(path.dirname(entry), target), path.join(ROOT, ".agents", SKILL_DIR));
+      assert.equal(
+        path.resolve(path.dirname(entry), target),
+        path.join(ROOT, ".agents", SKILL_DIR),
+      );
     }
   });
 
@@ -89,9 +95,9 @@ describe("Skill 手册", () => {
   });
 
   it("手册里的 pnpm 命令全部在 package.json 里", () => {
-    const scripts = JSON.parse(
-      fs.readFileSync(path.join(ROOT, "package.json"), "utf8"),
-    ) as { scripts: Record<string, string> };
+    const scripts = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
 
     for (const [, name] of manual.matchAll(/pnpm ([a-z][\w:]*)/g)) {
       assert.ok(name in scripts.scripts, `手册引用了不存在的命令 pnpm ${name}`);

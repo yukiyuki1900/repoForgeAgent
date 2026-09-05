@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { classify, TaskError } from "../src/failure.js";
-import { captureLogs } from "../src/log.js";
-import { cancelTask, startTask } from "../src/tasks.js";
+import { classify, TaskError } from "../src/core/failure.js";
+import { captureLogs } from "../src/core/log.js";
+import { cancelTask, startTask } from "../src/task/tasks.js";
 
 /**
  * 失败分类与排障日志。

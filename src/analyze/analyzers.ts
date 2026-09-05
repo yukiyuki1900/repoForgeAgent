@@ -1,4 +1,4 @@
-import type { FileNode, Finding, RelationEdge } from "./model.js";
+import type { FileNode, Finding, RelationEdge } from "../core/model.js";
 
 /**
  * 使用 Tarjan 强连通分量算法检测文件级循环依赖。

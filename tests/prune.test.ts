@@ -4,8 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, it } from "node:test";
-import { applyDeadExportRemoval } from "../src/prune.js";
-import { scanFiles } from "../src/scanner.js";
+import { applyDeadExportRemoval } from "../src/refactor/prune.js";
+import { scanFiles } from "../src/scan/scanner.js";
 
 /**
  * 死导出清理的端到端验证。
@@ -59,8 +59,7 @@ function sandbox(): string {
   return dir;
 }
 
-const read = (dir: string, file: string): string =>
-  fs.readFileSync(path.join(dir, file), "utf8");
+const read = (dir: string, file: string): string => fs.readFileSync(path.join(dir, file), "utf8");
 
 afterEach(() => {
   if (current) fs.rmSync(current, { recursive: true, force: true });
@@ -101,7 +100,10 @@ describe("applyDeadExportRemoval", () => {
     assert.match(format, /export function render\(value: string\): string \{/);
 
     // 有副作用的初始化一个字节都不能动
-    assert.equal(read(dir, "src/effects.ts"), "let counter = 0;\n\nfunction register(): number {\n  counter += 1;\n  return counter;\n}\n\n// 没有外部引用者，但初始化表达式是函数调用 —— 删掉就少执行一次 register()\nexport const registered = register();\n\nexport const activeFlag = true;\n");
+    assert.equal(
+      read(dir, "src/effects.ts"),
+      "let counter = 0;\n\nfunction register(): number {\n  counter += 1;\n  return counter;\n}\n\n// 没有外部引用者，但初始化表达式是函数调用 —— 删掉就少执行一次 register()\nexport const registered = register();\n\nexport const activeFlag = true;\n",
+    );
 
     // 产物落盘
     assert.ok(result.diffPath && fs.existsSync(result.diffPath));
