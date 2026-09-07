@@ -1387,3 +1387,91 @@
     animation: none;
   }
 }
+
+/* ── 任务历史 ────────────────────────────────────────────── */
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.history-list li + li {
+  border-top: 1px solid #e6edf5;
+}
+
+.history-list button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.history-list button:hover {
+  background: #f4f8fd;
+}
+
+/* 正在看的那条要一眼认得出来，否则点完不知道点没点中 */
+.history-list li.current button {
+  background: #eef4ff;
+  box-shadow: inset 3px 0 0 #3b82f6;
+}
+
+/*
+  问题可能很长，但它是这一行里唯一能让用户认出「这是哪次」的东西——
+  所以给它全部剩余宽度，截断而不是换行：**列表要能一眼扫完**
+*/
+.history-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-status {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #eef2f7;
+  color: #5b7189;
+  white-space: nowrap;
+}
+
+.history-status.status-running {
+  background: #e0edff;
+  color: #1d4ed8;
+}
+
+.history-status.status-completed {
+  background: #e3f6ec;
+  color: #15803d;
+}
+
+.history-status.status-failed {
+  background: #fdeaea;
+  color: #b91c1c;
+}
+
+/*
+  中断和失败**不能用同一种颜色**：失败是跑出了结论说这事不行，
+  中断是没跑到有结论。用户为前者找原因，为后者重跑一次
+*/
+.history-status.status-interrupted {
+  background: #fdf2e3;
+  color: #b45309;
+}
+
+.history-meta {
+  font-size: 12px;
+  color: #8aa4c0;
+  white-space: nowrap;
+}

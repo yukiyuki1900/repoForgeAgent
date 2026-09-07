@@ -6,7 +6,15 @@ import { AskPanel } from "./AskPanel";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { RefactorPanel } from "./RefactorPanel";
 import { demoEvents, demoReport, demoRetrieval } from "./demo";
-import { runTask, type TaskEvent, type TaskStatus } from "./task";
+import {
+  describeConnection,
+  peekTask,
+  resumeTask,
+  runTask,
+  type TaskEvent,
+  type TaskStatus,
+} from "./task";
+import { forget, recall } from "./session";
 import type {
   BrowseResponse,
   DirectoryEntry,
@@ -329,30 +337,80 @@ function App() {
    * 提交任务后立即返回，进度通过 SSE 逐节点推送。
    * 此前是同步等待整个分析完成，稍大的仓库必然请求超时。
    */
+  const handlers = () => ({
+    onEvent: (event: TaskEvent) => {
+      setNotice("LangGraph 正在分析仓库…");
+      setEvents((previous) => [...previous, toProgress(event)]);
+    },
+    onConnectionChange: (state: Parameters<typeof describeConnection>[0]) =>
+      setNotice(describeConnection(state)),
+  });
+
+  /** 提交和「刷新后接回」共用的收尾，避免两条路给出不一样的说法 */
+  const consume = async (run: () => Promise<TaskStatus<AnalyzeResult>>, failedPrefix: string) => {
+    try {
+      applyStatus(await run());
+    } catch (error) {
+      const reason = describeError(error);
+      fallback(
+        isDemo
+          ? `${failedPrefix}（${reason}），已切换为 Demo 数据。启动 pnpm api 后可分析真实仓库`
+          : `${failedPrefix}：${reason}`,
+      );
+    }
+  };
+
   const startAnalysis = async () => {
     setLoading(true);
     setEvents([]);
     setNotice("提交分析任务…");
 
-    try {
-      const status = await runTask<AnalyzeResult>({
-        url: "/analysis",
-        body: { root, query },
-        onEvent: (event) => {
-          setNotice("LangGraph 正在分析仓库…");
-          setEvents((previous) => [...previous, toProgress(event)]);
-        },
-      });
-      applyStatus(status);
-    } catch (error) {
-      const reason = describeError(error);
-      fallback(
-        isDemo
-          ? `提交失败（${reason}），已切换为 Demo 数据。启动 pnpm api 后可分析真实仓库`
-          : `提交失败：${reason}`,
-      );
-    }
+    await consume(
+      () =>
+        runTask<AnalyzeResult>({
+          url: "/analysis",
+          body: { root, query },
+          // 分析要跑几十秒到几分钟，**最经不起「刷一下就没了」**
+          resume: { kind: "analyze", root },
+          ...handlers(),
+        }),
+      "提交失败",
+    );
   };
+
+  useEffect(() => {
+    if (!root) return;
+    let dropped = false;
+
+    void (async () => {
+      const pending = recall("analyze", root);
+      if (!pending) return;
+      // 先看一眼还在不在：去接一个不存在的任务，用户会先看到「正在重连」
+      // 再看到「连接中断」——**为一个根本不存在的东西表演一遍重连**
+      if (!(await peekTask(pending.taskId))) {
+        forget("analyze");
+        return;
+      }
+      if (dropped) return;
+
+      setLoading(true);
+      setEvents([]);
+      setNotice("正在接回上次的分析…");
+
+      await consume(
+        () =>
+          resumeTask<AnalyzeResult>(pending.taskId, {
+            resume: { kind: "analyze", root },
+            ...handlers(),
+          }),
+        "接回上次的分析失败",
+      );
+    })();
+
+    return () => {
+      dropped = true;
+    };
+  }, [root]);
 
   const riskCount = useMemo(
     () => report?.findings.filter((item) => item.severity !== "info").length ?? 0,

@@ -23,6 +23,17 @@ const requireFrom = createRequire(import.meta.url);
 /** undefined 表示还没尝试加载，null 表示加载失败且已经提示过 */
 let sqlite: typeof DatabaseConstructor | null | undefined;
 
+/**
+ * 给同库的其他模块复用的驱动入口（任务历史归档也走 SQLite）。
+ *
+ * **必须共用这一个函数，不能各自 require 一遍**：上面那句告警是
+ * 「一次性」的，靠的是模块级的 `sqlite` 变量记住失败过。各写一份的话
+ * 用户会为同一件事看到两遍警告，而且两处的判定还可能不一致。
+ */
+export function getSqliteDriver(): typeof DatabaseConstructor | null {
+  return getSqlite();
+}
+
 function getSqlite(): typeof DatabaseConstructor | null {
   if (sqlite !== undefined) return sqlite;
 

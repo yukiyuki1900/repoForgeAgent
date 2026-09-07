@@ -8,12 +8,16 @@ import { fileURLToPath } from "node:url";
 import { runRefactorJob } from "../src/task/jobs.js";
 import { TIMEOUTS } from "../src/core/limits.js";
 import {
+  admitOrStart,
+  dedupeKeyOf,
   attachStream,
   cancelTask,
   formatEvent,
   getTask,
+  runningCount,
   startTask,
   type TaskEvent,
+  type TaskKind,
 } from "../src/task/tasks.js";
 
 /**
@@ -734,5 +738,186 @@ describe("离线任务不受客户端影响", () => {
 
     assert.ok(getTask(alive.taskId), "正在跑的任务不该被淘汰掉");
     cancelTask(alive.taskId);
+  });
+});
+
+/**
+ * 准入：同源去重 + 并发闸门。
+ *
+ * 这两件事防的是同一条循环，但分工不同：
+ *
+ * ```
+ * 去重  挡住「同一个活重复提交」——用户连点五次，第 2 次就被挡下
+ * 闸门  挡住「不同的活同时太多」——它是天花板，不是常态路径
+ * ```
+ *
+ * 为什么值得防：这个服务里大部分重活是同步 CPU，Node 单线程。
+ * 并发一多事件循环被钉死，**心跳就发不出去**，前端会把「服务端忙」
+ * 误判成「链路断了」，然后用重连去修它——而重连要回放全部历史事件，
+ * 正是让它更糟的那个操作。
+ */
+describe("提交前的准入", () => {
+  // 这个文件里前面的用例会留下若干 running 任务，`runningCount()` 是
+  // **模块级共享状态**。所以闸门相关的用例一律以当前值为基线算相对量，
+  // 写死一个绝对数会随「前面加了几条用例」而随机红
+  const baseline = (): number => runningCount();
+
+  /** 走真正的提交入口：判定与建任务是同一步，测的就是这条路 */
+  const post = (kind: TaskKind, root: string, payload?: unknown, limit?: number) =>
+    admitOrStart(
+      {
+        kind,
+        root,
+        dedupeKey: dedupeKeyOf(kind, root, payload),
+        run: () => new Promise(() => {}),
+        timeoutMs: 60_000,
+      },
+      limit,
+    );
+
+  const spin = (kind: TaskKind, root: string, payload?: unknown) => {
+    const admission = post(kind, root, payload);
+    assert.equal(admission.decision, "started");
+    return admission.decision === "started" ? admission.record : undefined!;
+  };
+
+  it("同样的活已经在跑，复用那个，不新建", (t) => {
+    const first = spin("analyze", "/repo/a");
+    t.after(() => cancelTask(first.taskId));
+
+    const admission = post("analyze", "/repo/a");
+    assert.equal(admission.decision, "reuse");
+    assert.equal(
+      admission.decision === "reuse" && admission.record.taskId,
+      first.taskId,
+      "必须是同一个任务，否则去重等于没做",
+    );
+  });
+
+  it("换个仓库、或换种活，都不算重复", (t) => {
+    const running = spin("analyze", "/repo/a");
+    t.after(() => cancelTask(running.taskId));
+
+    const other = post("analyze", "/repo/b");
+    const ask = post("ask", "/repo/a");
+    t.after(() => {
+      if (other.decision === "started") cancelTask(other.record.taskId);
+      if (ask.decision === "started") cancelTask(ask.record.taskId);
+    });
+
+    assert.equal(other.decision, "started", "别的仓库不该被误伤");
+    assert.equal(ask.decision, "started", "同一个仓库上提问和分析可以并存");
+  });
+
+  /**
+   * 这一组是这次修的 bug 本身。
+   *
+   * 键原来是 `root + kind`，而那只在 analyze 上成立——它的输入本来就只有
+   * root。ask 的 question、refactor 的 apply 都在键外面，于是两条用户
+   * 可见的错：问 B 拿到 A 的答案；dry-run 跑着时点真执行，界面说跑完了
+   * 而代码没动。
+   */
+  it("问题不同就不是同一件事——否则 B 会拿到 A 的答案", (t) => {
+    const first = spin("ask", "/repo/q", { question: "循环依赖在哪" });
+    const second = post("ask", "/repo/q", { question: "哪个模块被依赖最多" });
+    t.after(() => {
+      cancelTask(first.taskId);
+      if (second.decision === "started") cancelTask(second.record.taskId);
+    });
+
+    assert.equal(second.decision, "started");
+  });
+
+  it("同一个问题连点两次，仍然复用——这才是去重要防的", (t) => {
+    const first = spin("ask", "/repo/q2", { question: "循环依赖在哪" });
+    t.after(() => cancelTask(first.taskId));
+
+    assert.equal(post("ask", "/repo/q2", { question: "循环依赖在哪" }).decision, "reuse");
+  });
+
+  it("dry-run 和真执行不是同一件事——这条错会让用户以为代码改了", (t) => {
+    const dryRun = spin("refactor", "/repo/r", { apply: false });
+    const real = post("refactor", "/repo/r", { apply: true });
+    t.after(() => {
+      cancelTask(dryRun.taskId);
+      if (real.decision === "started") cancelTask(real.record.taskId);
+    });
+
+    assert.equal(
+      real.decision,
+      "started",
+      "复用了 dry-run 的话，界面会显示执行完成，而代码一个字没改",
+    );
+  });
+
+  it("字段顺序不影响键——两个语义相同的请求必须算出同一个键", () => {
+    assert.equal(
+      dedupeKeyOf("refactor", "/repo/x", { apply: true, dry: false }),
+      dedupeKeyOf("refactor", "/repo/x", { dry: false, apply: true }),
+    );
+    // 没传和传 undefined 也是一回事
+    assert.equal(
+      dedupeKeyOf("ask", "/repo/x", { question: "a" }),
+      dedupeKeyOf("ask", "/repo/x", { question: "a", maxSteps: undefined }),
+    );
+  });
+
+  it("已经结束的同源任务不复用——那是用户想重新跑一次", async () => {
+    const done = admitOrStart({
+      kind: "analyze",
+      root: "/repo/done",
+      dedupeKey: dedupeKeyOf("analyze", "/repo/done"),
+      run: async () => ({ ok: true }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(done.decision === "started" && done.record.status, "completed");
+
+    const again = post("analyze", "/repo/done");
+    assert.equal(again.decision, "started");
+    if (again.decision === "started") cancelTask(again.record.taskId);
+  });
+
+  it("在跑的太多就拒绝，并说清现在有几个", (t) => {
+    const limit = baseline() + 2;
+    const tasks = [spin("ask", "/repo/x"), spin("ask", "/repo/y")];
+    t.after(() => tasks.forEach((task) => cancelTask(task.taskId)));
+
+    const admission = post("ask", "/repo/z", undefined, limit);
+    assert.equal(admission.decision, "busy");
+    assert.equal(
+      admission.decision === "busy" && admission.running,
+      limit,
+      "拒绝时要带上当前负载，否则用户只知道「忙」，不知道忙到什么程度",
+    );
+  });
+
+  it("闸门满了，同源任务仍然复用而不是被拒", (t) => {
+    // **顺序守卫**：先去重再看闸门。反过来的话，一个已经在跑的任务会因为
+    // 「并发满了」被拒——而复用它根本不占新资源，拒绝它纯属自伤。
+    // 表现是「越忙越点不动，连看一眼正在跑的那个都不行」
+    const limit = baseline() + 1;
+    const running = spin("analyze", "/repo/same");
+    t.after(() => cancelTask(running.taskId));
+
+    assert.equal(
+      post("analyze", "/repo/same", undefined, limit).decision,
+      "reuse",
+      "去重必须排在闸门前面",
+    );
+  });
+
+  it("任务结束后名额立刻还回来", async (t) => {
+    const limit = baseline() + 1;
+    const occupying = spin("refactor", "/repo/slot");
+    t.after(() => cancelTask(occupying.taskId));
+
+    assert.equal(post("refactor", "/repo/other", undefined, limit).decision, "busy");
+
+    cancelTask(occupying.taskId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const after = post("refactor", "/repo/other", undefined, limit);
+    assert.equal(after.decision, "started", "取消之后名额没还回来的话，闸门会越关越死");
+    if (after.decision === "started") cancelTask(after.record.taskId);
   });
 });

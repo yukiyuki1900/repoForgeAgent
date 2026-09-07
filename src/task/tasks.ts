@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 
-import { TIMEOUTS } from "../core/limits.js";
+import { MAX_CONCURRENT_TASKS, TIMEOUTS } from "../core/limits.js";
 import { classify, type TaskFailure } from "../core/failure.js";
 import { log } from "../core/log.js";
 import { newTrace } from "../core/trace.js";
@@ -70,6 +70,15 @@ export interface TaskRecord<TResult = unknown> {
   taskId: string;
   kind: TaskKind;
   root: string;
+  /**
+   * 「什么算同一件事」的指纹，由发起方按影响结果的参数算出（见 `dedupeKeyOf`）。
+   *
+   * 它和 `taskId` 是两种完全不同的标识，**不能互相替代**：
+   * `taskId` 认的是「这一个任务」，去重要认的是「这两次提交是不是同一件事」。
+   * taskId 全局唯一，拿它当去重键**永远去不了重**；而且第一次提交时
+   * 客户端手里根本还没有 taskId——它是去重通过之后才产生的东西。
+   */
+  dedupeKey: string;
   /**
    * W3C Trace Context 的 trace-id，沿用客户端送来的那个。
    *
@@ -165,9 +174,169 @@ export function getTask(taskId: string): TaskRecord | undefined {
   return tasks.get(taskId);
 }
 
+/** 内存里现存的全部任务（含已结束但还没被淘汰的） */
+export function listTasks(): TaskRecord[] {
+  return [...tasks.values()];
+}
+
+/**
+ * 归档钩子。**默认什么都不做，由上层注入实现。**
+ *
+ * 这里不直接 import 归档模块，是为了让这一层保持「只管任务机制」：
+ * 它现在的依赖只有 limits / failure / log / trace，全是纯的。
+ * 直连 SQLite 之后，每个跑任务的测试都会在临时目录里落一个 .db 文件——
+ * **测试要为一个与被测行为无关的副作用做清理，本身就是设计在提意见。**
+ */
+type Archiver = (record: TaskRecord) => void;
+
+let archive: Archiver = () => {};
+
+export function setArchiver(fn: Archiver): void {
+  archive = fn;
+}
+
+/** 归档是旁路，坏了不能把任务带下水 */
+function tryArchive(record: TaskRecord): void {
+  try {
+    archive(record);
+  } catch {
+    // 归档模块内部已经吞过一次，这里是最后一道
+  }
+}
+
+/**
+ * 提交一个任务的三种结果。
+ *
+ * 它们对应三种完全不同的产品语义，**所以不能压成一个布尔值**：
+ *
+ * - `reuse`   同样的活已经在跑了 → 把那个任务给他，不新建
+ * - `busy`    在跑的太多了       → 拒绝，并告诉他现在有几个
+ * - `started` 开工了
+ *
+ * 顺序是刻意的：**先去重，再看闸门。** 反过来的话，一个已经在跑的任务
+ * 会因为「并发满了」被拒——而复用它根本不占新资源，拒绝它纯属自伤。
+ */
+export type Admission<TResult = unknown> =
+  | { decision: "reuse"; record: TaskRecord }
+  | { decision: "busy"; running: number }
+  | { decision: "started"; record: TaskRecord<TResult> };
+
+export function runningCount(): number {
+  let count = 0;
+  for (const record of tasks.values()) if (record.status === "running") count += 1;
+  return count;
+}
+
+/**
+ * 算一个去重键。
+ *
+ * ## 为什么不是 `root + kind`
+ *
+ * 那是最初的写法，当时只有 analyze 一种模式，而它的输入本来就只有 root，
+ * 所以「同一个仓库同一种活」恰好等价于「同一件事」。加了另两种模式之后
+ * 这个等价关系就断了，但键没跟着改，于是有两条**用户可见的错**：
+ *
+ * - `ask`：问题 A 还在跑时问 B，B 被判定为重复，**拿到的是 A 的答案**
+ * - `refactor`：dry-run 跑着时点「真执行」，被判定为重复，
+ *   界面显示跑完了，**用户以为写盘了，实际一个字没改**
+ *
+ * 后一条尤其要命：它落在写用户代码这条线上。虽然后果是「没写」而不是
+ * 「写错」，但**用户对系统的认知和事实分叉了**，而这个项目自己的原则
+ * 就是不做用户看不出来的事。
+ *
+ * ## 正确的标准
+ *
+ * **键必须覆盖所有影响结果的输入。** `root + kind` 只是这个标准在
+ * analyze 上的退化形式，不是标准本身。
+ *
+ * 判断一个参数进不进键，只看它会不会改变结果：`maxSteps` 会（轮次上限
+ * 不同，答案可能不同），`traceId` 不会。**拿不准就放进去**——漏进的
+ * 后果是答非所问，多进的后果只是少复用一次。
+ *
+ * ## 为什么必须由路由传，而不是在这里推
+ *
+ * 这跟「兜底超时按 kind 推导」正好相反：超时能从已有信息推出来，
+ * 而**哪些参数影响结果只有路由自己知道**。放在这里推，等于每加一种模式
+ * 都要回来改这个函数，漏改还不报错。
+ */
+export function dedupeKeyOf(kind: TaskKind, root: string, payload?: unknown): string {
+  const fingerprint = createHash("sha1")
+    .update(stableStringify(payload))
+    .digest("hex")
+    .slice(0, 16);
+  return `${kind}:${root}:${fingerprint}`;
+}
+
+/**
+ * 键值序列化必须**与字段顺序无关**。
+ *
+ * `JSON.stringify` 按属性插入顺序输出，`{apply:true, root:"/a"}` 和
+ * `{root:"/a", apply:true}` 会得到两个不同的字符串——**两个语义完全相同
+ * 的请求算出两个键，去重就静默失效了**。调用方写对象时的字段顺序
+ * 不该影响系统行为。
+ */
+function stableStringify(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value !== "object") return String(value);
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    // undefined 的字段视同没传：`{apply: undefined}` 和 `{}` 是一回事
+    .filter(([, item]) => item !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, item]) => `${key}=${stableStringify(item)}`);
+  return entries.join("&");
+}
+
+/**
+ * 同一件事已经在跑就复用。
+ *
+ * **这是「用户连点五次按钮」的解药，不是通用幂等。** 通用幂等防的是
+ * 网络超时后客户端重发，那需要客户端生成 `Idempotency-Key`；
+ * 而这里防的是同一个人短时间内提交了多次同样的请求，用业务参数就够。
+ *
+ * 只匹配 running：已经结束的任务不该被复用，那是用户想重新跑一次。
+ */
+function findRunning(dedupeKey: string): TaskRecord | undefined {
+  for (const record of tasks.values()) {
+    if (record.status === "running" && record.dedupeKey === dedupeKey) return record;
+  }
+  return undefined;
+}
+
+/**
+ * 准入判定与建任务，**必须是一个函数**。
+ *
+ * 拆成 `admit()` + `startTask()` 两步时，它们之间是一段**隐式的临界区**：
+ * 两个请求同时进来，只要中间插进一次 `await`，就会双双拿到「可以开工」，
+ * 各建一个任务、各烧一次 token——而且不报错。
+ *
+ * 此前它是安全的，靠的是「三条路由的 handler 恰好都是同步的」。
+ * 那是一条**没写下来、也没人守得住的不变量**：哪天有人把 `resolveModel`
+ * 改成异步、或者在中间加一次 `await readConfig()`，去重就静默失效了。
+ *
+ * 合成一个函数之后，这个约束由**函数边界**保证，不再依赖谁记得。
+ */
+export function admitOrStart<TResult>(
+  input: StartTaskInput<TResult> & { dedupeKey: string },
+  limit = MAX_CONCURRENT_TASKS,
+): Admission<TResult> {
+  const existing = findRunning(input.dedupeKey);
+  if (existing) return { decision: "reuse", record: existing };
+
+  const running = runningCount();
+  if (running >= limit) return { decision: "busy", running };
+
+  return { decision: "started", record: startTask(input) };
+}
+
 export interface StartTaskInput<TResult> {
   kind: TaskKind;
   root: string;
+  /**
+   * 去重键。**提交入口（`admitOrStart`）要求必填**，这里可选只是为了
+   * 让直接建任务的测试不必每处都算一遍——退化值是老行为 `kind + root`。
+   */
+  dedupeKey?: string;
   /** 客户端送来的 trace-id；不传就自己生成一个 */
   traceId?: string;
   /** 附加在任务上的描述信息，例如 ask 的问题、refactor 是否写入 */
@@ -195,6 +364,7 @@ export function startTask<TResult>(input: StartTaskInput<TResult>): TaskRecord<T
     taskId: randomUUID(),
     kind: input.kind,
     root: input.root,
+    dedupeKey: input.dedupeKey ?? `${input.kind}:${input.root}`,
     traceId: input.traceId ?? newTrace().traceId,
     status: "running",
     startedAt: new Date().toISOString(),
@@ -209,6 +379,11 @@ export function startTask<TResult>(input: StartTaskInput<TResult>): TaskRecord<T
   evictOld();
 
   log("task.start", { traceId: record.traceId, taskId: record.taskId, kind: record.kind });
+
+  // **开始时就归档一行。** 只在结束时写的话，进程崩在任务中途的那些任务
+  // 会彻底消失——而它们恰恰是用户最想知道下落的。代价是库里会留下
+  // 停在 running 上的记录，读取侧拿内存对账，翻译成 `interrupted`
+  tryArchive(record as TaskRecord);
 
   const timer = setTimeout(
     () => {
@@ -354,6 +529,10 @@ function finish(record: TaskRecord): void {
     if (!stream.destroyed) stream.end();
   }
   record.subscribers.clear();
+
+  // 归档挂在**终态的唯一出口**上，而不是分别挂在「跑完了」和「被取消」
+  // 两条路上——后者迟早会在新加的第三条路上被忘掉，而漏归档是不报错的
+  tryArchive(record);
 }
 
 /**

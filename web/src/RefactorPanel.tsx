@@ -1,6 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ActivityLog } from "./ActivityLog";
-import { describeError, runTask, type TaskEvent } from "./task";
+import {
+  describeConnection,
+  describeError,
+  peekTask,
+  resumeTask,
+  runTask,
+  type TaskEvent,
+  type TaskStatus,
+} from "./task";
+import { forget, recall } from "./session";
 
 /**
  * 改造面板。
@@ -70,21 +79,10 @@ export function RefactorPanel({ root }: { root: string }) {
   const [startedAt, setStartedAt] = useState<number>();
   const [finishedAt, setFinishedAt] = useState<number>();
 
-  const run = async (apply: boolean) => {
-    setBusy(true);
-    setConfirming(false);
-    setEvents([]);
-    if (apply) setResult(undefined);
-    setNotice("");
-    setStartedAt(Date.now());
-    setFinishedAt(undefined);
-
+  /** 提交和「刷新后接回」共用的收尾处理，避免两条路给出不一样的说法 */
+  const consume = async (run: () => Promise<TaskStatus<RefactorResult>>) => {
     try {
-      const status = await runTask<RefactorResult>({
-        url: "/refactor",
-        body: { root, apply },
-        onEvent: (event) => setEvents((previous) => [...previous, event]),
-      });
+      const status = await run();
 
       if (status.status === "failed") {
         setNotice(`执行失败：${status.error ?? "未知错误"}`);
@@ -103,6 +101,63 @@ export function RefactorPanel({ root }: { root: string }) {
       setBusy(false);
     }
   };
+
+  const handlers = () => ({
+    onEvent: (event: TaskEvent) => setEvents((previous) => [...previous, event]),
+    onConnectionChange: (state: Parameters<typeof describeConnection>[0]) =>
+      setNotice(describeConnection(state)),
+  });
+
+  const run = async (apply: boolean) => {
+    setBusy(true);
+    setConfirming(false);
+    setEvents([]);
+    if (apply) setResult(undefined);
+    setNotice("");
+    setStartedAt(Date.now());
+    setFinishedAt(undefined);
+
+    await consume(() =>
+      runTask<RefactorResult>({
+        url: "/refactor",
+        body: { root, apply },
+        // 改造尤其值得能接回来：它会写用户的代码，跑到一半看不见了最让人不安
+        resume: { kind: "refactor", root },
+        ...handlers(),
+      }),
+    );
+  };
+
+  useEffect(() => {
+    let dropped = false;
+
+    void (async () => {
+      const pending = recall("refactor", root);
+      if (!pending) return;
+      if (!(await peekTask(pending.taskId))) {
+        forget("refactor");
+        return;
+      }
+      if (dropped) return;
+
+      setBusy(true);
+      setEvents([]);
+      setNotice("正在接回上次的改造…");
+      setStartedAt(pending.startedAt);
+      setFinishedAt(undefined);
+
+      await consume(() =>
+        resumeTask<RefactorResult>(pending.taskId, {
+          resume: { kind: "refactor", root },
+          ...handlers(),
+        }),
+      );
+    })();
+
+    return () => {
+      dropped = true;
+    };
+  }, [root]);
 
   const plan = result?.plan;
   const candidates = plan?.cycles.flatMap((cycle) => cycle.candidates) ?? [];

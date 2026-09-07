@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 
-import { runTask, TaskCancelled, TaskDisconnected, type TaskEvent } from "../src/task.js";
+import {
+  describeConnection,
+  runTask,
+  TaskCancelled,
+  TaskDisconnected,
+  type ConnectionState,
+  type TaskEvent,
+} from "../src/task.js";
 
 /**
  * 任务客户端。
@@ -51,6 +58,7 @@ const ACCEPTED = {
   status: "running",
   statusUrl: "/tasks/task-1",
   eventsUrl: "/tasks/task-1/events",
+  probeUrl: "/tasks/task-1/summary",
   traceId: "aaaabbbbccccddddeeeeffff00001111",
 };
 
@@ -290,6 +298,45 @@ describe("任务客户端", () => {
     assert.equal(cancel?.method, "POST");
   });
 
+  /**
+   * 复用别人正在跑的任务时，这个页面只是个观察者。
+   *
+   * 点「离开」发 cancel 的话，另一个页面上正在生成的回答会**半句话断掉**，
+   * 而那边的用户什么都没做。复用是系统替他做的决定，他甚至不知道自己
+   * 被并了过去——**你没发起的任务，你没有权力替别人终止。**
+   */
+  it("搭上别人的任务时，离开只断自己，不发 cancel", async () => {
+    const controller = new AbortController();
+    const calls = stubFetch([
+      () => json({ ...ACCEPTED, reused: true }, 202),
+      (init) => {
+        queueMicrotask(() => controller.abort());
+        return new Response(
+          new ReadableStream({
+            start(stream) {
+              init?.signal?.addEventListener("abort", () => stream.error(new Error("aborted")), {
+                once: true,
+              });
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        );
+      },
+      () => json({ status: "cancelled" }),
+    ]);
+
+    await assert.rejects(
+      runTask({ url: "/ask", body: {}, onEvent: () => {}, signal: controller.signal }),
+      (error: Error) => error instanceof TaskCancelled,
+    );
+
+    assert.equal(
+      calls.find((c) => c.url.includes("/cancel")),
+      undefined,
+      "复用来的任务不该被这个页面掐掉",
+    );
+  });
+
   it("重连时把已经生成的回答全量补齐，而不是接在旧文本后面", async () => {
     noBackoff();
     stubFetch([
@@ -308,5 +355,308 @@ describe("任务客户端", () => {
     // 事件靠序号增量续传，文本靠全量替换——两种数据特征不同，策略也不同。
     // 接错了的表现是「已经写已经写了一半」
     assert.equal(text, "已经写了一半");
+  });
+
+  /**
+   * 心跳超时之后先探一下，再决定要不要重连。
+   *
+   * **「收不到心跳」是一个症状、两个病因**：链路假死该尽快重连，服务端
+   * 事件循环被钉死则绝不能重连——重连要回放全部历史事件，是火上浇油。
+   * 这两种在客户端看来一模一样，所以要花一个极轻的请求把它们分开。
+   */
+  describe("心跳超时", () => {
+    /** 一条永远不来数据、但响应 abort 的流：真实假死就长这样 */
+    const silent = () => (init?: RequestInit) =>
+      new Response(
+        new ReadableStream({
+          start(stream) {
+            init?.signal?.addEventListener("abort", () => stream.error(new Error("aborted")), {
+              once: true,
+            });
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      );
+
+    const runWithFastHeartbeat = (): Promise<unknown> =>
+      runTask({
+        url: "/ask",
+        body: {},
+        onEvent: () => {},
+        // 真等 45 秒的用例没人会跑
+        heartbeatTimeoutMs: 20,
+      });
+
+    it("撞上阈值会主动断开并去探，而不是干等着", async () => {
+      noBackoff();
+      const calls = stubFetch([
+        () => json(ACCEPTED, 202),
+        silent(),
+        () => json({ status: "running" }),
+        () => sse([DONE]),
+        () => json({ ...ACCEPTED, status: "completed", events: [] }),
+      ]);
+
+      await runWithFastHeartbeat();
+
+      const probe = calls.find((c) => c.url.includes("/summary"));
+      assert.ok(probe, "必须探一下——不探就分不清是链路假死还是服务端忙");
+      assert.equal(probe?.method, "GET");
+      assert.ok(probe?.headers.traceparent, "探针也要带编号，否则这一跳在日志里断了");
+    });
+
+    it("探针说服务端还活着 → 立刻重连", async () => {
+      noBackoff();
+      const calls = stubFetch([
+        () => json(ACCEPTED, 202),
+        silent(),
+        () => json({ status: "running" }),
+        () => sse([progress(0, "续上了"), DONE]),
+        () => json({ ...ACCEPTED, status: "completed", events: [] }),
+      ]);
+
+      const events: TaskEvent[] = [];
+      await runTask({
+        url: "/ask",
+        body: {},
+        onEvent: (e) => events.push(e),
+        heartbeatTimeoutMs: 20,
+      });
+
+      assert.equal(events.length, 1, "服务端好好的，重连就该接得上");
+      assert.equal(calls.filter((c) => c.url.includes("/events")).length, 2, "断一次、重连一次");
+    });
+
+    it("探针说任务其实已经结束了 → 不重连，直接收尾", async () => {
+      noBackoff();
+      const calls = stubFetch([
+        () => json(ACCEPTED, 202),
+        silent(),
+        // done 帧丢了，但任务在服务端早就完成了
+        () => json({ status: "completed" }),
+        () => json({ ...ACCEPTED, status: "completed", events: [] }),
+      ]);
+
+      const status = await runWithFastHeartbeat();
+
+      assert.equal((status as { status: string }).status, "completed");
+      assert.equal(
+        calls.filter((c) => c.url.includes("/events")).length,
+        1,
+        "**这一条是白捡的**：不探的话要白白重连一次才发现任务早就结束了",
+      );
+    });
+
+    it("探针也答不上来 → 判定服务端在忙，退避拉长而不是马上回去加压", async () => {
+      // 这条是整组的重点。**退避长度就是这里唯一能观察到的行为差异**：
+      // 重连照样会发生，区别只在等多久——所以断言必须落在时长上
+      const waits: number[] = [];
+      const realSetTimeout = globalThis.setTimeout;
+      globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+        if (typeof ms === "number" && ms > 0) waits.push(ms);
+        return realSetTimeout(fn, 0);
+      }) as typeof globalThis.setTimeout;
+
+      Math.random = () => 0; // 普通退避归零，剩下的只可能是「忙」那条下限
+
+      try {
+        stubFetch([
+          () => json(ACCEPTED, 202),
+          silent(),
+          // 探针自己超时——事件循环被钉死时它也一样排不上队
+          () => {
+            throw new Error("probe timed out");
+          },
+          () => sse([DONE]),
+          () => json({ ...ACCEPTED, status: "completed", events: [] }),
+        ]);
+
+        await runWithFastHeartbeat();
+      } finally {
+        globalThis.setTimeout = realSetTimeout;
+      }
+
+      assert.ok(
+        waits.some((ms) => ms >= 8_000),
+        `服务端在忙的时候必须拉长退避，实际等待：${waits.join(", ")}`,
+      );
+    });
+
+    it("用户取消优先于心跳超时——那是两件事", async () => {
+      const controller = new AbortController();
+      stubFetch([
+        () => json(ACCEPTED, 202),
+        (init) => {
+          queueMicrotask(() => controller.abort());
+          return new Response(
+            new ReadableStream({
+              start(stream) {
+                init?.signal?.addEventListener("abort", () => stream.error(new Error("aborted")), {
+                  once: true,
+                });
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "text/event-stream" } },
+          );
+        },
+        () => json({ status: "cancelled" }),
+      ]);
+
+      await assert.rejects(
+        runTask({
+          url: "/ask",
+          body: {},
+          onEvent: () => {},
+          signal: controller.signal,
+          heartbeatTimeoutMs: 20,
+        }),
+        (error: Error) => error instanceof TaskCancelled,
+        "用户点了停止，就不该再被解释成「链路有问题」",
+      );
+    });
+
+    it("重连次数已经用尽时点停止，说的是「已停止」而不是「连接中断」", async () => {
+      // **这条是变异测试逼出来的。** 原来只有上面那条取消用例，而它
+      // 删掉 `runTask` 里的「取消优先」总闸之后**依然全绿**——因为
+      // `delay()` 撞上 abort 也会抛 `TaskCancelled`，两条路的结果一样。
+      //
+      // 唯一真正需要那道总闸的是这个边界：重连预算刚好耗尽的同一刻用户
+      // 点了停止。没有它，用户会看到「重连 5 次仍未恢复」——**明明是他
+      // 自己停的，却被告知网络有问题**。
+      noBackoff();
+      const controller = new AbortController();
+      let attempts = 0;
+      const dead = (): Response => {
+        attempts += 1;
+        // 第 6 次失败会让 attempt 超出上限；赶在那之前点停止
+        if (attempts >= 6) controller.abort();
+        throw new Error("network down");
+      };
+
+      stubFetch([
+        () => json(ACCEPTED, 202),
+        dead,
+        dead,
+        dead,
+        dead,
+        dead,
+        dead,
+        () => json({ status: "cancelled" }),
+      ]);
+
+      await assert.rejects(
+        runTask({ url: "/ask", body: {}, onEvent: () => {}, signal: controller.signal }),
+        (error: Error) => error instanceof TaskCancelled,
+        "用户的意图优先于我们自己的重连预算",
+      );
+    });
+  });
+
+  /**
+   * 重连期间界面上要有反馈。
+   *
+   * 服务端卡住时一轮是「45 秒等心跳 + 5 秒探针 + 8 秒退避」≈ 58 秒，
+   * 五轮将近五分钟——**这段时间界面一声不吭，就成了假死**。
+   * 这一组守的是「等待也要有反馈」这条原则在重连路径上也成立。
+   */
+  describe("重连时的界面反馈", () => {
+    const states: ConnectionState[] = [];
+    const track = (state: ConnectionState): number => states.push(state);
+
+    it("一次都没断过就不该冒出任何链路提示", async () => {
+      stubFetch([
+        () => json(ACCEPTED, 202),
+        () => sse([progress(0, "一步到位"), DONE]),
+        () => json({ ...ACCEPTED, status: "completed", events: [] }),
+      ]);
+      states.length = 0;
+
+      await runTask({ url: "/ask", body: {}, onEvent: () => {}, onConnectionChange: track });
+
+      assert.deepEqual(states, [], "顺利跑完还弹「已连接」，是在制造噪音");
+    });
+
+    it("断开时报出第几次，恢复时再报一声", async () => {
+      noBackoff();
+      stubFetch([
+        () => json(ACCEPTED, 202),
+        () => sse([progress(0, "第一步")]), // 流意外结束
+        () => sse([progress(1, "续上了"), DONE]),
+        () => json({ ...ACCEPTED, status: "completed", events: [] }),
+      ]);
+      states.length = 0;
+
+      await runTask({ url: "/ask", body: {}, onEvent: () => {}, onConnectionChange: track });
+
+      assert.equal(states.length, 2, "一次断、一次恢复");
+      assert.deepEqual(states[0], {
+        status: "reconnecting",
+        attempt: 1,
+        max: 5,
+        serverBusy: false,
+      });
+      assert.deepEqual(states[1], { status: "connected" });
+    });
+
+    it("提示排在重连请求之前，不是等完才补报", async () => {
+      // **报晚了等于没报**：用户要的正是「这段安静是有人在处理」。
+      //
+      // 第一版这条我是去拦 setTimeout 的，结果**误抓了心跳看门狗**
+      // ——它也是一个 setTimeout，而且排在更前面。改成直接看
+      // 「提示」和「重连请求」的先后，测的才是真正在乎的那件事
+      noBackoff();
+      const order: string[] = [];
+      stubFetch([
+        () => {
+          order.push("提交");
+          return json(ACCEPTED, 202);
+        },
+        () => {
+          order.push("首连");
+          return sse([progress(0, "第一步")]); // 流意外结束
+        },
+        () => {
+          order.push("重连");
+          return sse([DONE]);
+        },
+        () => json({ ...ACCEPTED, status: "completed", events: [] }),
+      ]);
+
+      await runTask({
+        url: "/ask",
+        body: {},
+        onEvent: () => {},
+        onConnectionChange: () => order.push("提示"),
+      });
+
+      assert.deepEqual(
+        order.slice(0, 4),
+        ["提交", "首连", "提示", "重连"],
+        "提示必须在重连动作之前发出",
+      );
+    });
+
+    it("服务端在忙和普通断线，说法要不一样", () => {
+      // 同一个界面位置说两件不同的事，用户没法判断该不该管
+      const busy = describeConnection({
+        status: "reconnecting",
+        attempt: 2,
+        max: 5,
+        serverBusy: true,
+      });
+      const plain = describeConnection({
+        status: "reconnecting",
+        attempt: 2,
+        max: 5,
+        serverBusy: false,
+      });
+
+      assert.notEqual(busy, plain);
+      assert.match(busy, /繁忙/);
+      assert.match(plain, /重连/);
+      // 这句是这一刻用户最需要知道的：界面卡住了，但活还在干
+      for (const text of [busy, plain]) assert.match(text, /任务仍在后台继续/);
+      assert.match(busy, /2\/5/, "要说清第几次，否则用户不知道还要等多久");
+    });
   });
 });
