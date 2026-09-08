@@ -188,7 +188,9 @@ export function calculateMetrics(files: FileNode[], edges: RelationEdge[]): Metr
   const totalOutDegree = [...outDegree.values()].reduce((sum, value) => sum + value, 0);
   const averageOutDegree = totalOutDegree / fileCount;
 
-  const typedFiles = files.filter((file) => file.language.startsWith("ts")).length;
+  // 用 scanner 在扫描阶段判好的 typed，不要退回 `language.startsWith("ts")`——
+  // 那样 `.vue` 一律算作没类型，整个 Vue 生态的仓库都会被系统性低估
+  const typedFiles = files.filter((file) => file.typed).length;
 
   const dimensions = {
     complexity: toScore(100 - averageComplexity * 5),

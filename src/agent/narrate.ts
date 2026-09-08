@@ -17,7 +17,12 @@ import type { LanguageModel } from "./llm.js";
 /**
  * 架构叙述节点的上下文构建与模型调用。
  *
- * 这是整条流水线里唯一调用 LLM 的地方，边界很明确：
+ * 流水线里有两个节点会调 LLM：`retrieveContext` 把自然语言翻译成查询计划，
+ * 和这里。**但只有这一个是"让模型说话"的**——那边的产物是几个检索词，
+ * 立刻被确定性的 `hybridRetrieve` 消费掉；只有这里的产物直接给人看。
+ * 它也是全流水线最贵的一步（实测 18 秒，占比过半）。
+ *
+ * 边界很明确：
  * - 循环依赖由 Tarjan 算出，复杂度由静态分析算出，环上切点由引用计数算出
  * - LLM 只做三件事：分层推断、危害解读、优先级排序
  *
@@ -243,7 +248,7 @@ export async function narrateWithModel(
     schema: narrationSchema,
     system: SYSTEM_PROMPT,
     prompt: `以下是仓库分析结果的结构化摘要：\n\n${JSON.stringify(context, null, 2)}`,
-    // 这是整条流水线里唯一的 LLM 节点，也是最慢的一步（实测 18 秒）。
+    // 全流水线最慢的一步（实测 18 秒）。
     // 之前它拿不到任何 signal——用户点了停止，界面停了、状态写成 cancelled 了，
     // 但这次调用会跑完，token 照烧
     abortSignal: stepSignal(signal, TIMEOUTS.modelCall),

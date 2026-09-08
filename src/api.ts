@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { loadEnv } from "./core/env.js";
 import { runAskJob, runRefactorJob } from "./task/jobs.js";
-import { resolveModel } from "./agent/llm.js";
+import { describeModelUnavailable, resolveModel } from "./agent/llm.js";
 import { locateDirectories, type Fingerprint } from "./scan/locate.js";
 import { readLatestRun, readRunSummaries } from "./report/storage.js";
 import {
@@ -185,10 +185,7 @@ router.post("/ask", (ctx) => {
   const model = resolveModel();
   if (!model) {
     ctx.status = 400;
-    ctx.body = {
-      error:
-        "ask 需要模型：确定性分析可以没有 LLM，但「自己决定查什么」不行。请在 .env 配置 OPENAI_API_KEY",
-    };
+    ctx.body = { error: describeModelUnavailable() };
     return;
   }
 

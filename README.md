@@ -95,9 +95,11 @@ cp .env.example .env      # 用编辑器填入 key
 |---|---|
 | `OPENAI_API_KEY` | 启用架构解读、查询计划与 `ask`（后者强制需要） |
 | `OPENAI_BASE_URL` | OpenAI 协议兼容网关（DeepSeek、智谱等） |
-| `REPOSURGEON_MODEL` | 默认 `gpt-4o-mini` |
+| `REPOSURGEON_MODEL` | 官方端点下默认 `gpt-4o-mini`；**配了网关就必须一起配它** |
 | `REPOSURGEON_API_PORT` | API 端口，默认 `3100` |
 | `REPOSURGEON_WEB_PORT` | 看板端口，默认 `5173` |
+
+后两项是**一对**：默认模型名只在 OpenAI 官方端点上存在，只配 `OPENAI_BASE_URL` 会拿着 `gpt-4o-mini` 去请求别家网关，换回一句「模型不存在」——所以这种半截配置会在启动路径上直接判为配置错误，而不是留到发请求时才炸。
 
 `.env.local` 覆盖 `.env`；显式 `export` 的优先级最高。**不要把 key 写在命令行里**——zsh 交互模式默认不把 `#` 当注释，追加说明会被当成参数，而且命令行会进 shell 历史。
 
@@ -236,20 +238,18 @@ $ pnpm refactor ./your-project --propose
 pnpm dev      # API 3100 + 看板 5173
 ```
 
-三种模式共用一套任务协议：**提交立刻返回 `taskId`，进度走 SSE，结果按需拉取**。同步执行在稍大的仓库上必然请求超时，所以提交和订阅是两个独立的 HTTP 请求。
+三种模式共用一套任务协议：**提交立刻返回 `taskId`，进度走 SSE，结果按需拉取**。
 
-任务是**离线**的——发起之后可以断网、关页面、换设备，只有显式取消才会终止它。围绕这条承诺有四件事：
+任务是**离线**的——发起之后可以断网、关页面、换设备，只有显式取消才会终止它：
 
-| 能力 | 做法 |
+| 能力 | 表现 |
 |---|---|
-| **断线续传** | SSE 事件带序号，重连时浏览器自动带 `Last-Event-ID`，只补发之后的；已生成的回答文本走全量替换一次补齐 |
-| **刷新接回** | `taskId` 存 localStorage（存钥匙不存状态，真相在服务端），打开页面先探一次再接 |
-| **分享与寻址** | `taskId` 进地址栏（`?task=<id>&mode=ask`），可以复制、收藏、发给别人 |
-| **历史回看** | 任务归档落 SQLite，关掉页面之后仍能从历史列表找回——**taskId 是 UUID，一个没被记下来的任务等于从来没跑过** |
+| **断线续传** | 网络断了自动重连，只补发断开之后的进度，已生成的回答不会丢 |
+| **刷新接回** | 刷新页面自动回到正在跑的那个任务 |
+| **分享与寻址** | `taskId` 在地址栏里（`?task=<id>&mode=ask`），可以复制、收藏、发给别人 |
+| **历史回看** | 关掉页面之后仍能从历史列表找回，任务归档跟着仓库走 |
 
-提交侧有两道闸：**同一件事已经在跑就复用那个任务**（键覆盖所有影响结果的参数，所以 dry-run 和真执行、两个不同的问题都不会被合并），**并发超过上限返回 429** 并带 `Retry-After`。
-
-进程崩在半路的任务会在历史里显示成 `interrupted`——不是完成、不是失败、也不是被谁取消的，是**没能跑到有结论**。判据是归档里写着 running、而内存里没有。
+同一件事重复提交会复用正在跑的那个任务；并发超过上限返回 429 并带 `Retry-After`。进程崩在半路的任务在历史里显示成 `interrupted`——不是完成、不是失败、也不是被谁取消的，是**没能跑到有结论**。
 
 ## MCP Server
 
@@ -289,135 +289,11 @@ ln -s "$PWD/.agents/skills/frontend-repo-checkup" ~/.claude/skills/
 ln -s "$PWD/.agents/skills/frontend-repo-checkup" ~/.cursor/skills/
 ```
 
-## 架构
-
-```
-                    ┌──────────── 命令行 ────────────┐
-                    │  analyze · ask · refactor      │
-                    └───────────────┬────────────────┘
-                                    │
-  scanner ──► graph ──► ┌───────────┴───────────┐
-  文件扫描    AST 语义图  │  workflow（LangGraph） │  ◄── Web 看板
-                        │  task（SSE 进度 + 归档）│      React + Vite
-                        └───────────┬───────────┘
-                                    │
-              ┌─────────────────────┼─────────────────────┐
-              ▼                     ▼                     ▼
-        analyzers             tools + ask            refactor + apply
-     Tarjan / 指标 / 死导出    9 个只读工具         import type 拆环 · 死导出清理
-                                  ↑   ↓                双层验证 + 回滚
-                                  │  模型自主循环
-                                  │
-                            mcp.ts ──► Claude Code / Cursor
-                          同一套工具，标准协议出口
-```
-
-| 依赖 | 用途 |
-|---|---|
-| **ts-morph / TypeScript Compiler API** | 建立符号与依赖图，模块解析交给编译器 |
-| **LangGraph** | 分析流水线编排：并行 fan-out / fan-in、条件路由、节点级进度 |
-| **Vercel AI SDK** | 结构化输出与工具调用循环 |
-| **MCP SDK** | 把工具集通过标准协议交给编辑器 |
-| **@vue/compiler-sfc** | 可选依赖，`.vue` 抽出 script 走同一条 AST 路径 |
-| **better-sqlite3** | 可选依赖，分析结果索引与任务历史归档；装不上就整体降级，任务照跑 |
-| **React + Vite** | Web 看板 |
-
-## 开发
-
-```bash
-pnpm eval          # 回归评估：校验分析器在固定输入上产出的事实
-pnpm test          # 端到端：图真的能跑通、改动真的写盘、MCP 真的能握手
-pnpm build         # 类型检查与编译
-pnpm format        # 代码格式化
-pnpm stop          # 终止残留的开发进程
-```
-
-`pnpm eval` 校验判断准不准（fixture 驱动），`pnpm test` 校验动作对不对（真实 git 仓库写盘、桩模型跑工具调用循环、真实 MCP 客户端握手、前后端字段契约）。
-
-`pnpm test` 里还有一组**文档一致性**检查：相对链接是否指向真实文件、下面这棵结构树是否和磁盘完全一致、文档里的 `pnpm <script>` 是否真的存在。**文档腐坏是静默的**——目录重构之后 README 会立刻变成一张错的地图，而没有任何东西会因此报错。
-
-```
-src/
-├── workflow.ts          LangGraph 编排、State 通道、条件路由
-├── api.ts               HTTP 路由：任务提交与准入、SSE、历史、目录浏览
-├── cli.ts               命令行入口
-├── mcp.ts               MCP Server：同一套工具的标准协议出口
-│
-├── core/                跨层的地基，不依赖任何业务模块
-│   ├── analysis.ts      分析结果的类型定义
-│   ├── plan.ts          意图识别与节点裁剪规则
-│   ├── limits.ts        超时、并发、体积上限
-│   ├── failure.ts       失败分类：是哪一类、重试有没有用
-│   ├── trace.ts         W3C Trace Context 的解析与生成
-│   ├── log.ts           结构化日志（每条都带 traceId）
-│   └── env.ts           .env / .env.local 加载
-│
-├── scan/                把仓库变成图
-│   ├── scanner.ts       文件扫描、hash、行数、圈复杂度
-│   ├── graph.ts         ts-morph 语义解析：符号、依赖边、render 边
-│   ├── alias.ts         构建配置里的 resolve.alias 静态提取
-│   ├── stack.ts         技术栈识别
-│   └── locate.ts        按目录特征反查仓库路径
-│
-├── analyze/             在图上算事实
-│   ├── analyzers.ts     Tarjan 循环依赖、前端专项检查、维护性指标
-│   ├── architecture.ts  模块聚合、分层推断、组件拓扑
-│   ├── deadexports.ts   没有引用者的导出
-│   ├── retrieval.ts     查询计划与混合检索
-│   └── facts.ts         给模型看的事实包
-│
-├── agent/               模型这一侧
-│   ├── tools.ts         暴露给模型的只读工具集
-│   ├── ask.ts           工具调用循环、流式输出、轮次控制
-│   ├── narrate.ts       上下文压缩、环切点计算、架构解读
-│   └── llm.ts           模型解析与降级判断
-│
-├── refactor/            改造与验证
-│   ├── refactor.ts      import type 拆环的检测与模拟
-│   ├── prune.ts         死导出清理的检测与模拟
-│   ├── apply.ts         写入、两层验证、失败回滚与产物留档
-│   ├── verify.ts        类型基线对比与重扫对账
-│   ├── propose.ts       方案的 schema 约束
-│   ├── validate.ts      方案的静态校验
-│   ├── execute.ts       方案的执行与对账
-│   └── proposalflow.ts  提方案链路的编排
-│
-├── task/                三种模式共用的任务机制
-│   ├── tasks.ts         状态机、去重与准入、SSE 订阅与回放
-│   ├── history.ts       任务归档：落库、读取、崩溃后的状态对账
-│   └── jobs.ts          三种模式各自的任务体
-│
-└── report/
-    ├── report.ts        md / html / json 三份产物
-    └── storage.ts       SQLite 索引读写（可选依赖，拿不到就跳过）
-
-web/src/
-├── main.tsx             看板外壳、仓库选择、分析面板
-├── AskPanel.tsx         追问面板
-├── RefactorPanel.tsx    改造面板
-├── TaskHistory.tsx      任务历史列表
-├── ActivityLog.tsx      进度时间线
-├── Markdown.tsx         流式 Markdown 与代码围栏
-├── task.ts              任务客户端：提交、订阅、重连退避、心跳探针
-├── sse.ts               SSE 帧解析（fetch + ReadableStream，不是 EventSource）
-├── session.ts           taskId 的本地记忆，刷新后接回
-├── deeplink.ts          taskId 与模式写进地址栏
-├── highlight.ts         轻量语法高亮
-├── typewriter.ts        按帧吐字，让流式节奏可控
-├── trace.ts             请求发出前生成 traceId
-├── ErrorBoundary.tsx    渲染异常兜底
-├── types.ts             与后端的字段契约（手写，由测试锁住）
-└── demo.ts              离线演示数据
-
-fixtures/            回归评估用例
-tests/               端到端与契约测试
-.agents/skills/      前端仓库体检的操作手册
-```
-
 ## 文档
 
 | 文档 | 内容 |
 |---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | **代码结构**：模块分层、源码结构树、本地开发命令 |
 | [docs/DESIGN.md](docs/DESIGN.md) | **设计取舍**：为什么这么做，以及不这么做的代价 |
 | [docs/PROPOSAL.md](docs/PROPOSAL.md) | AI 提方案的边界设计：模型能提什么、明确不做什么、怎么校验 |
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | 能力边界与路线图 |

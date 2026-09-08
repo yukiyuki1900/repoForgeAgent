@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
  *
  * ## 为什么这件事需要测试
  *
- * 文档腐坏是**静默的**：源码目录重构之后，README 里那棵结构树立刻就成了
- * 一张错的地图，但没有任何东西会报错——CI 全绿、类型检查通过、所有用例
+ * 文档腐坏是**静默的**：源码目录重构之后，`docs/ARCHITECTURE.md` 里那棵结构树
+ * 立刻就成了一张错的地图，但没有任何东西会报错——CI 全绿、类型检查通过、所有用例
  * 都在跑。它唯一的表现是**下一个人照着它找 `src/tasks.ts`，扑了个空**。
  *
  * 这次人工核对时，实际找到的正是这一类：结构树停在目录重构之前，8 个文件
@@ -35,7 +35,7 @@ import { fileURLToPath } from "node:url";
  *
  * ```
  * 往 LIMITATIONS.md 加一条指向不存在文件的链接   → 红
- * 从 README 结构树里删掉 history.ts 那一行        → 红
+ * 从结构树里删掉 history.ts 那一行                → 红
  * 往文档里写一句 pnpm nonexistent-script          → 红
  * 全部还原                                        → 绿
  * ```
@@ -92,7 +92,7 @@ describe("文档与代码的一致性", () => {
   });
 
   /**
-   * README 的结构树是**新人读代码的第一张地图**。
+   * 源码结构树是**新人读代码的第一张地图**。
    *
    * 它和别的文档段落不一样：措辞过时只是不够好，而地图过时是**把人带到
    * 错的地方**。所以这一条卡得最死——双向断言，多列一个文件和少列一个
@@ -100,14 +100,21 @@ describe("文档与代码的一致性", () => {
    *
    * 多列出来的通常是删掉的文件（读者会去找一个不存在的东西），
    * 少列的通常是新加的目录（读者以为项目里没有这一块）。
+   *
+   * **这棵树原本在 README 里。** README 收窄成「项目介绍 + 使用方法」之后
+   * 它迁到了 `docs/ARCHITECTURE.md`——检查跟着搬家，而不是趁机取消。
+   * 一个因为文件挪了位置就被删掉的检查，等于承认它本来就没在守什么。
    */
-  it("README 的源码结构树和磁盘上的文件完全一致", () => {
-    const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  it("源码结构树和磁盘上的文件完全一致", () => {
+    const doc = path.join(ROOT, "docs", "ARCHITECTURE.md");
+    assert.ok(fs.existsSync(doc), "docs/ARCHITECTURE.md 不见了——源码结构树就住在这里");
+
+    const content = fs.readFileSync(doc, "utf8");
 
     // 结构树是那个以 `src/` 开头的代码块。用内容特征定位而不是数第几个块——
     // 后者会在任何人往前面插一段示例时静默失效
-    const block = readme.match(/```\r?\nsrc\/\r?\n([\s\S]*?)```/);
-    assert.ok(block, "README 里找不到源码结构树——它是新人读代码的第一张地图，不该被删掉");
+    const block = content.match(/```\r?\nsrc\/\r?\n([\s\S]*?)```/);
+    assert.ok(block, "找不到源码结构树——它是新人读代码的第一张地图，不该被删掉");
 
     const listed = new Set(block[1].match(/[\w.-]+\.tsx?/g) ?? []);
     const actual = new Set(
@@ -120,14 +127,14 @@ describe("文档与代码的一致性", () => {
     const missing = [...actual].filter((name) => !listed.has(name)).sort();
     const stale = [...listed].filter((name) => !actual.has(name)).sort();
 
-    assert.deepEqual(missing, [], `这些文件在磁盘上，但 README 没列：${missing.join(", ")}`);
-    assert.deepEqual(stale, [], `README 列了这些文件，但磁盘上没有：${stale.join(", ")}`);
+    assert.deepEqual(missing, [], `这些文件在磁盘上，但结构树没列：${missing.join(", ")}`);
+    assert.deepEqual(stale, [], `结构树列了这些文件，但磁盘上没有：${stale.join(", ")}`);
   });
 
   /**
    * 文档里的命令是**用户第一件会照抄的东西**。
    *
-   * 脚本改名或删掉时，README 里那行 `pnpm xxx` 不会跟着变——用户复制粘贴，
+   * 脚本改名或删掉时，文档里那行 `pnpm xxx` 不会跟着变——用户复制粘贴，
    * 拿到的是一句 `Command "xxx" not found`。**第一条命令就跑不通的项目，
    * 没人会读到第二段。**
    */

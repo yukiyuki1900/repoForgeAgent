@@ -7,7 +7,7 @@ import { askCodebase, formatAskResult } from "./agent/ask.js";
 import { planDeadExportRemoval } from "./analyze/deadexports.js";
 import { loadEnv } from "./core/env.js";
 import { applyProposal, formatExecution } from "./refactor/execute.js";
-import { resolveModel } from "./agent/llm.js";
+import { describeModelUnavailable, resolveModel } from "./agent/llm.js";
 import { buildIndex } from "./agent/tools.js";
 import { extractGraph } from "./scan/graph.js";
 import { applyDeadExportRemoval, formatPruneResult } from "./refactor/prune.js";
@@ -193,7 +193,7 @@ async function runPropose(
 ): Promise<void> {
   const model = resolveModel();
   if (!model) {
-    console.log("需要配置模型才能提方案：设置 OPENAI_API_KEY 或 ANTHROPIC_API_KEY 后重试");
+    console.log(`需要配置模型才能提方案：${describeModelUnavailable()}`);
     process.exitCode = 1;
     return;
   }
@@ -315,10 +315,7 @@ program
   .action(async (directory: string, question: string, options: AskOptions) => {
     const model = resolveModel();
     if (!model) {
-      throw new Error(
-        "ask 需要模型：确定性分析可以没有 LLM，但「自己决定查什么」不行。\n" +
-          "请在 .env 里配置 OPENAI_API_KEY（兼容网关再配 OPENAI_BASE_URL）",
-      );
+      throw new Error(describeModelUnavailable());
     }
 
     let streamed = false;

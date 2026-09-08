@@ -125,9 +125,9 @@ START → loadRepository → scanFiles → detectStack → plan     ← 决策�
                   （可裁剪）        （恒在）       （恒在）        （可裁剪）
                        └─────────────┴───────────────┴───────────────┘
                                                      ▼
-                                          retrieveContext              ← 有问题才进
+                                          retrieveContext              ← 有问题才进，有模型时它也调 LLM
                                                      ▼
-                                                  narrate              ← 唯一的 LLM 节点，可裁剪
+                                                  narrate              ← 最贵的 LLM 节点，可裁剪
                                                      ▼
                                                   render → END
 ```

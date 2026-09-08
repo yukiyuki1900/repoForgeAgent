@@ -33,6 +33,17 @@ export interface FileNode {
   id: string;
   path: string;
   language: Language;
+  /**
+   * 这个文件带不带类型信息。
+   *
+   * **不能由 `language` 推出来**，所以必须单独存：`.vue` 的 SFC 是否用
+   * TypeScript 写的，要看 `<script>` 上有没有 `lang="ts"`——一个 100% 用
+   * `<script setup lang="ts">` 的 Vue3 项目，扩展名全是 `.vue`。
+   *
+   * 判定放在 scanner 里，因为那是全流程唯一「已经手里拿着文件内容、
+   * 而且每个文件只经过一次」的地方。
+   */
+  typed: boolean;
   size: number;
   contentHash: string;
   lineCount: number;
